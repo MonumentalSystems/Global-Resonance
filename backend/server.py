@@ -314,6 +314,124 @@ def get_cosmic_rays():
     return result
 
 
+@app.get("/api/dst")
+def get_dst():
+    """Real-time Dst index from Kyoto WDC."""
+    import ssl
+    # Kyoto WDC has cert issues, use httpx with verify=False for this source
+    try:
+        with httpx.Client(timeout=15, verify=False, headers={"User-Agent": "GlobalResonance/1.0"}) as client:
+            resp = client.get("https://wdc.kugi.kyoto-u.ac.jp/dst_realtime/202603/dst2603.for.request")
+            content = resp.text
+    except Exception as e:
+        return {"dst": [], "error": str(e)}
+
+    # Parse WDC format: each line is STATION YEAR MONTH DAY BASELINE 24_hourly_values MEAN
+    # Format: DST  26 3  1  ... (24 hourly values) ...
+    entries = []
+    for line in content.strip().split("\n"):
+        if not line.strip() or line.startswith("DST") is False:
+            # Try to parse anyway — WDC format varies
+            pass
+        try:
+            # Fixed-width format: day in cols 8-9, then 24 values of 4 chars each
+            if len(line) < 50:
+                continue
+            day = int(line[8:10].strip())
+            base = int(line[16:20].strip()) if line[16:20].strip().lstrip('-').isdigit() else 0
+            hourly = []
+            for h in range(24):
+                start = 20 + h * 4
+                val_str = line[start:start+4].strip()
+                if val_str and val_str.lstrip('-').isdigit():
+                    hourly.append(int(val_str))
+                else:
+                    hourly.append(None)
+            for h, val in enumerate(hourly):
+                if val is not None:
+                    entries.append({
+                        "day": day,
+                        "hour": h,
+                        "dst": val,
+                    })
+        except Exception:
+            pass
+
+    current = entries[-1]["dst"] if entries else None
+    return {
+        "dst": entries[-72:],  # last 3 days
+        "current": current,
+        "storm": current is not None and current < -50,
+    }
+
+
+@app.get("/api/cme")
+def get_cme():
+    """Active CME tracking — cone projection for the globe."""
+    # Current active CME (X1.4 from Mar 30)
+    cme_launch = "2026-03-30T03:24:00Z"
+    cme_speed = 1689
+    half_angle = 46
+    source_lat = -27  # S27
+    source_lon_solar = 45  # E45 on sun -> need to convert to Earth subsolar frame
+    predicted_arrival = "2026-03-31T15:07:00Z"
+    earth_impact_prob = 0.92
+    kp_forecast = "6-9"
+
+    # Fetch recent CMEs from DONKI cache
+    donki = cached_fetch("donki_cme",
+        "https://api.nasa.gov/DONKI/CME?startDate=2026-03-28&endDate=2026-03-31&api_key=DEMO_KEY",
+        ttl=600)
+
+    active_cmes = []
+    if donki:
+        for cme in donki:
+            analyses = cme.get("cmeAnalyses", [])
+            for a in analyses:
+                if a.get("isEarthGB"):
+                    active_cmes.append({
+                        "time": cme.get("startTime"),
+                        "speed": a.get("speed"),
+                        "half_angle": a.get("halfAngle"),
+                        "arrival": a.get("estimatedShockArrivalTime"),
+                        "kp": a.get("kp_18") or a.get("kp_90"),
+                    })
+
+    return {
+        "primary": {
+            "launch": cme_launch,
+            "speed": cme_speed,
+            "half_angle_deg": half_angle,
+            "source_solar": {"lat": source_lat, "lon": source_lon_solar},
+            "predicted_arrival": predicted_arrival,
+            "earth_impact_prob": earth_impact_prob,
+            "kp_forecast": kp_forecast,
+        },
+        "active_cmes": active_cmes,
+    }
+
+
+@app.get("/api/flares")
+def get_flares():
+    """Recent solar flares from DONKI."""
+    data = cached_fetch("donki_flares",
+        "https://api.nasa.gov/DONKI/FLR?startDate=2026-03-28&endDate=2026-03-31&api_key=DEMO_KEY",
+        ttl=600)
+    if not data:
+        return {"flares": []}
+    flares = []
+    for fl in data:
+        flares.append({
+            "class": fl.get("classType"),
+            "peak": fl.get("peakTime"),
+            "begin": fl.get("beginTime"),
+            "end": fl.get("endTime"),
+            "source": fl.get("sourceLocation"),
+            "ar": fl.get("activeRegionNum"),
+        })
+    return {"flares": flares}
+
+
 @app.get("/api/status")
 def get_status():
     """Overall system status combining all data sources."""
