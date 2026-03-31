@@ -494,6 +494,43 @@ document.querySelectorAll('#sun-selector button').forEach(b => {
     });
 });
 
+// ===== MAGNETOMETER STATIONS =====
+function updateMagnetometers(data) {
+    clearLayer('magnetometers');
+    if (!data?.stations) return;
+    const layer = getLayer('magnetometers');
+
+    data.stations.forEach(st => {
+        const pos = ll2v(st.lat, st.lon, R * 1.004);
+        // Diamond marker
+        const geo = new THREE.OctahedronGeometry(0.008, 0);
+        const mat = new THREE.MeshBasicMaterial({
+            color: st.network === 'USGS' ? 0xcc44cc : 0x44cccc,
+            transparent: true, opacity: 0.8,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(pos);
+        mesh.userData = { type: 'magnetometer', ...st };
+        layer.add(mesh);
+
+        // Small label (only visible up close)
+        // We'll rely on tooltip for now
+    });
+}
+
+// ===== DST UPDATE =====
+function updDst(data) {
+    if (!data) return;
+    const el = document.getElementById('dst-metric');
+    const st = document.getElementById('st-dst');
+    if (data.current != null) {
+        el.textContent = `${data.current} nT`;
+        el.className = 'm ' + (data.current > -30 ? 'q' : data.current > -50 ? 'a' : 's');
+        st.textContent = `${data.current} nT`;
+        st.className = 'v ' + (data.current > -30 ? 'g' : data.current > -50 ? '' : 'w');
+    }
+}
+
 // ===== Layer toggles =====
 document.querySelectorAll('.layer-toggle input').forEach(inp => {
     inp.addEventListener('change', () => {
@@ -528,13 +565,88 @@ box.addEventListener('mousemove', e => {
         tip.style.display = 'block';
         tip.style.left = (e.clientX+14)+'px';
         tip.style.top = (e.clientY-10)+'px';
+        const zoneColors = { eye:'#44f', inner:'#4f4', wavefront:'#f44', outer:'#ff4', far:'#888', antipodal:'#c8c' };
         tip.innerHTML = `<b style="color:#ff6644">M${eq.mag.toFixed(1)}</b> ${eq.place}<br>`+
             `Depth: ${eq.depth?.toFixed(0)||'?'}km | ${ageH.toFixed(1)}h ago<br>`+
-            `${eq.ang_dist}deg from subsolar | <b style="color:${eq.zone==='wavefront'?'#ff4444':'#888'}">${eq.zone}</b>`;
+            `${eq.ang_dist}deg | <span style="color:${zoneColors[eq.zone]||'#888'}">${eq.zone}</span>`;
+        box.style.cursor = 'pointer';
     } else {
         tip.style.display = 'none';
+        box.style.cursor = 'grab';
     }
 });
+
+// Click to inspect — checks earthquakes and magnetometers
+box.addEventListener('click', e => {
+    const r = box.getBoundingClientRect();
+    mouse.x = ((e.clientX-r.left)/r.width)*2-1;
+    mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+    ray.setFromCamera(mouse, camera);
+
+    // Check earthquakes first
+    const eqLayer = layerGroups['earthquakes'];
+    if (eqLayer) {
+        const hits = ray.intersectObjects(eqLayer.children);
+        const hit = hits.find(h => h.object.userData?.mag);
+        if (hit) { showDetail(hit.object.userData); return; }
+    }
+
+    // Check magnetometers
+    const magLayer = layerGroups['magnetometers'];
+    if (magLayer?.visible) {
+        const hits = ray.intersectObjects(magLayer.children);
+        const hit = hits.find(h => h.object.userData?.type === 'magnetometer');
+        if (hit) { showMagDetail(hit.object.userData); return; }
+    }
+
+    // Click on empty space closes the panel
+    document.getElementById('detail').style.display = 'none';
+});
+
+function showDetail(eq) {
+    const panel = document.getElementById('detail');
+    const content = document.getElementById('detail-content');
+    const ageH = (Date.now() - eq.time) / 3600000;
+    const dt = new Date(eq.time);
+    const zoneColors = { eye:'#44f', inner:'#4f4', wavefront:'#f44', outer:'#ff4', far:'#888', antipodal:'#c8c' };
+    const zoneRatios = { eye:'0.85x', inner:'1.05x', wavefront:'1.36x', outer:'1.10x', far:'1.05x', antipodal:'1.16x' };
+
+    content.innerHTML = `
+        <h3>M${eq.mag.toFixed(1)} ${eq.place || 'Unknown'}</h3>
+        <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T',' ').substring(0,19)} UTC</span></div>
+        <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH*60).toFixed(0)+' min' : ageH.toFixed(1)+' hours'} ago</span></div>
+        <div class="row"><span class="k">Location</span><span class="val">${eq.lat.toFixed(3)}N, ${eq.lon.toFixed(3)}E</span></div>
+        <div class="row"><span class="k">Depth</span><span class="val">${eq.depth?.toFixed(1) || '?'} km</span></div>
+        <div class="row"><span class="k">Subsolar dist</span><span class="val">${eq.ang_dist} deg</span></div>
+        <div class="row"><span class="k">Jelly Ball zone</span>
+            <span class="zone-badge" style="background:${zoneColors[eq.zone]||'#444'};color:#fff">${eq.zone} (${zoneRatios[eq.zone]||'?'})</span>
+        </div>
+        <div style="margin-top:8px; border-top:1px solid #222; padding-top:6px;">
+            <a href="https://earthquake.usgs.gov/earthquakes/eventpage/${eq.id || ''}" target="_blank">USGS Event Page &rarr;</a>
+        </div>
+    `;
+    panel.style.display = 'block';
+}
+
+function showMagDetail(st) {
+    const panel = document.getElementById('detail');
+    const content = document.getElementById('detail-content');
+    content.innerHTML = `
+        <h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
+        <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
+        <div class="row"><span class="k">Location</span><span class="val">${st.lat.toFixed(2)}N, ${st.lon.toFixed(2)}E</span></div>
+        ${st.live ? `
+        <div style="margin-top:6px; border-top:1px solid #222; padding-top:6px;">
+            <div class="row"><span class="k">B_X</span><span class="val">${st.live.X?.toFixed(1) || '?'} nT</span></div>
+            <div class="row"><span class="k">B_Y</span><span class="val">${st.live.Y?.toFixed(1) || '?'} nT</span></div>
+            <div class="row"><span class="k">B_Z</span><span class="val">${st.live.Z?.toFixed(1) || '?'} nT</span></div>
+        </div>` : '<div class="d" style="margin-top:6px">No live data (archival only)</div>'}
+        <div style="margin-top:6px;">
+            <a href="https://geomag.usgs.gov/ws/data/?id=${st.code}" target="_blank" style="color:#0cf;font-size:9px">USGS Data Service &rarr;</a>
+        </div>
+    `;
+    panel.style.display = 'block';
+}
 
 // ===== Clock =====
 setInterval(() => {
@@ -544,19 +656,38 @@ setInterval(() => {
 
 // ===== Poll =====
 async function poll() {
-    const [eqs, ss, kp, sw, xrs, sunD, lunar, cr] = await Promise.allSettled([
-        fetchJSON('/earthquakes'), fetchJSON('/subsolar'), fetchJSON('/kp'),
-        fetchJSON('/solar_wind'), fetchJSON('/xrs'), fetchJSON('/sun'),
-        fetchJSON('/lunar'), fetchJSON('/cosmic_rays'),
+    const results = await Promise.allSettled([
+        fetchJSON('/earthquakes'),    // 0
+        fetchJSON('/subsolar'),       // 1
+        fetchJSON('/kp'),             // 2
+        fetchJSON('/solar_wind'),     // 3
+        fetchJSON('/xrs'),            // 4
+        fetchJSON('/sun'),            // 5
+        fetchJSON('/lunar'),          // 6
+        fetchJSON('/cosmic_rays'),    // 7
+        fetchJSON('/dst'),            // 8
+        fetchJSON('/magnetometers'),  // 9
     ]);
-    if (eqs.value) updateEarthquakes(eqs.value);
-    if (ss.value) { updateSubsolar(ss.value); updateJellyBall(ss.value); updateTerminator(ss.value); }
-    if (kp.value) updKp(kp.value);
-    if (sw.value) updSW(sw.value);
-    if (xrs.value) updXRS(xrs.value);
-    if (sunD.value) updSun(sunD.value);
-    if (lunar.value) updLunar(lunar.value);
-    if (cr.value) updCR(cr.value);
+    const v = i => results[i]?.value;
+    if (v(0)) updateEarthquakes(v(0));
+    if (v(1)) { updateSubsolar(v(1)); updateJellyBall(v(1)); updateTerminator(v(1)); }
+    if (v(2)) updKp(v(2));
+    if (v(3)) updSW(v(3));
+    if (v(4)) updXRS(v(4));
+    if (v(5)) updSun(v(5));
+    if (v(6)) updLunar(v(6));
+    if (v(7)) updCR(v(7));
+    if (v(8)) updDst(v(8));
+    if (v(9)) updateMagnetometers(v(9));
+    // Cosmic ray in status bar
+    if (v(7)?.stations) {
+        const ks = Object.keys(v(7).stations);
+        if (ks.length) {
+            const avg = ks.reduce((s,k) => s + v(7).stations[k].deviation_pct, 0) / ks.length;
+            document.getElementById('st-cr').textContent = `${avg>0?'+':''}${avg.toFixed(1)}%`;
+            document.getElementById('st-cr').className = 'v ' + (v(7).forbush_detected ? 'w' : 'g');
+        }
+    }
 }
 poll();
 setInterval(poll, POLL);

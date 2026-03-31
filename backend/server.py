@@ -119,6 +119,7 @@ def get_earthquakes(hours: int = 72, min_mag: float = 4.5, limit: int = 500):
             else: zone = "antipodal"
 
             eqs.append({
+                "id": f.get("id", ""),
                 "mag": p.get("mag"),
                 "place": p.get("place", ""),
                 "time": p.get("time"),
@@ -127,6 +128,10 @@ def get_earthquakes(hours: int = 72, min_mag: float = 4.5, limit: int = 500):
                 "depth": c[2],
                 "ang_dist": round(ang_dist, 1),
                 "zone": zone,
+                "tsunami": p.get("tsunami", 0),
+                "felt": p.get("felt"),
+                "alert": p.get("alert"),
+                "type": p.get("type", "earthquake"),
             })
         except Exception:
             pass
@@ -430,6 +435,51 @@ def get_flares():
             "ar": fl.get("activeRegionNum"),
         })
     return {"flares": flares}
+
+
+@app.get("/api/magnetometers")
+def get_magnetometers():
+    """Ground magnetometer station locations and live data links."""
+    # USGS and INTERMAGNET stations we have data for
+    stations = [
+        {"code": "BOU", "name": "Boulder", "lat": 40.14, "lon": -105.24, "network": "USGS"},
+        {"code": "FRD", "name": "Fredericksburg", "lat": 38.20, "lon": -77.37, "network": "USGS"},
+        {"code": "HON", "name": "Honolulu", "lat": 21.32, "lon": -158.00, "network": "USGS"},
+        {"code": "SJG", "name": "San Juan", "lat": 18.11, "lon": -66.15, "network": "USGS"},
+        {"code": "TUC", "name": "Tucson", "lat": 32.17, "lon": -110.73, "network": "USGS"},
+        {"code": "HER", "name": "Hermanus", "lat": -34.43, "lon": 19.23, "network": "INTERMAGNET"},
+        {"code": "KAK", "name": "Kakioka", "lat": 36.23, "lon": 140.19, "network": "INTERMAGNET"},
+        {"code": "SUA", "name": "Surlari", "lat": 44.68, "lon": 26.25, "network": "INTERMAGNET"},
+        {"code": "MCQ", "name": "Macquarie Is.", "lat": -54.50, "lon": 158.95, "network": "INTERMAGNET"},
+    ]
+
+    # Try to get live FRD data from USGS
+    now = datetime.now(timezone.utc)
+    try:
+        frd_url = (
+            f"https://geomag.usgs.gov/ws/data/?elements=X,Y,Z&"
+            f"endtime={now.strftime('%Y-%m-%dT%H:%M:%SZ')}&"
+            f"id=FRD&sampling_period=60&"
+            f"starttime={(now - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}&"
+            f"type=variation&format=json"
+        )
+        frd_data = cached_fetch("frd_mag", frd_url, ttl=120)
+        if frd_data and "values" in frd_data:
+            vals = frd_data["values"]
+            if vals:
+                last = vals[-1]
+                for s in stations:
+                    if s["code"] == "FRD":
+                        s["live"] = {
+                            "X": last.get("X"),
+                            "Y": last.get("Y"),
+                            "Z": last.get("Z"),
+                            "time": now.isoformat(),
+                        }
+    except Exception:
+        pass
+
+    return {"stations": stations}
 
 
 @app.get("/api/status")
