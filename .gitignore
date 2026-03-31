@@ -1,0 +1,26 @@
+# Data (too large for git, tracked separately)
+data/
+!data/INDEX.md
+!data/data_paths.py
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Output
+backend/output/
+*.png
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

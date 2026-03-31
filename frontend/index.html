@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Resonance</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a1a;
+            color: #cccccc;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0; left: 0;
+            width: 70vw; height: 100vh;
+        }
+        #sidebar {
+            position: absolute;
+            top: 0; right: 0;
+            width: 30vw; height: 100vh;
+            background: rgba(10, 10, 26, 0.95);
+            border-left: 1px solid #222244;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        #header {
+            position: absolute;
+            top: 10px; left: 10px;
+            z-index: 100;
+            font-size: 14px;
+        }
+        #header h1 {
+            color: #00ccff;
+            font-size: 18px;
+            margin-bottom: 4px;
+        }
+        #header .subtitle {
+            color: #888888;
+            font-size: 11px;
+        }
+        #status-bar {
+            position: absolute;
+            bottom: 0; left: 0;
+            width: 70vw; height: 36px;
+            background: rgba(10, 10, 26, 0.9);
+            border-top: 1px solid #222244;
+            display: flex;
+            align-items: center;
+            padding: 0 15px;
+            font-size: 11px;
+            z-index: 100;
+        }
+        .status-item {
+            margin-right: 20px;
+            white-space: nowrap;
+        }
+        .status-item .label { color: #666; }
+        .status-item .value { color: #00ccff; font-weight: bold; }
+        .status-item .value.warn { color: #ff4444; }
+        .status-item .value.ok { color: #44ff44; }
+
+        /* Layer toggles */
+        #layers {
+            margin-bottom: 15px;
+        }
+        #layers h3 {
+            color: #00ccff;
+            font-size: 12px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #222244;
+            padding-bottom: 4px;
+        }
+        .layer-toggle {
+            display: flex;
+            align-items: center;
+            margin-bottom: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .layer-toggle input { margin-right: 6px; }
+        .layer-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+            display: inline-block;
+        }
+
+        /* Side panels */
+        .panel {
+            background: #0d0d2b;
+            border: 1px solid #222244;
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 10px;
+        }
+        .panel h4 {
+            color: #00ccff;
+            font-size: 11px;
+            margin-bottom: 6px;
+        }
+        .panel canvas {
+            width: 100%;
+            height: 80px;
+        }
+        .panel .metric {
+            font-size: 20px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .panel .metric.quiet { color: #44ff44; }
+        .panel .metric.active { color: #ffff44; }
+        .panel .metric.storm { color: #ff4444; }
+        .panel .detail {
+            font-size: 9px;
+            color: #666;
+            text-align: center;
+        }
+
+        /* Sun view */
+        #sun-panel img {
+            width: 100%;
+            border-radius: 4px;
+            margin-bottom: 4px;
+        }
+        #sun-selector {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+            margin-bottom: 6px;
+        }
+        #sun-selector button {
+            background: #1a1a3a;
+            border: 1px solid #333366;
+            color: #cccccc;
+            font-size: 9px;
+            padding: 2px 6px;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        #sun-selector button.active {
+            background: #00ccff;
+            color: #0a0a1a;
+        }
+
+        /* Order parameter */
+        #order-param {
+            text-align: center;
+            padding: 10px;
+        }
+        #order-param .state {
+            font-size: 16px;
+            font-weight: bold;
+            padding: 4px 12px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        #order-param .state.falling {
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+        #order-param .state.rising {
+            color: #44ff44;
+            border: 1px solid #44ff44;
+        }
+        #order-param .state.stable {
+            color: #888888;
+            border: 1px solid #444444;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="header">
+        <h1>GLOBAL RESONANCE</h1>
+        <div class="subtitle" id="clock"></div>
+    </div>
+
+    <div id="status-bar">
+        <div class="status-item"><span class="label">Kp </span><span class="value" id="st-kp">--</span></div>
+        <div class="status-item"><span class="label">Bz </span><span class="value" id="st-bz">--</span></div>
+        <div class="status-item"><span class="label">V_sw </span><span class="value" id="st-vsw">--</span></div>
+        <div class="status-item"><span class="label">Moon </span><span class="value" id="st-moon">--</span></div>
+        <div class="status-item"><span class="label">XRS </span><span class="value" id="st-xrs">--</span></div>
+        <div class="status-item"><span class="label">EQs/24h </span><span class="value" id="st-eqs">--</span></div>
+    </div>
+
+    <div id="sidebar">
+        <!-- Layer toggles -->
+        <div id="layers">
+            <h3>DATA LAYERS</h3>
+            <label class="layer-toggle"><input type="checkbox" checked data-layer="earthquakes"><span class="layer-dot" style="background:#ff6644"></span>Earthquakes M4.5+</label>
+            <label class="layer-toggle"><input type="checkbox" checked data-layer="jelly-ball"><span class="layer-dot" style="background:#4444ff"></span>Jelly Ball Zones</label>
+            <label class="layer-toggle"><input type="checkbox" checked data-layer="subsolar"><span class="layer-dot" style="background:#ffff00"></span>Subsolar Point</label>
+            <label class="layer-toggle"><input type="checkbox" data-layer="plates"><span class="layer-dot" style="background:#444466"></span>Plate Boundaries</label>
+            <label class="layer-toggle"><input type="checkbox" data-layer="magnetometers"><span class="layer-dot" style="background:#cc44cc"></span>Magnetometer Stations</label>
+            <label class="layer-toggle"><input type="checkbox" data-layer="tidal"><span class="layer-dot" style="background:#44cccc"></span>Tidal Stress</label>
+            <label class="layer-toggle"><input type="checkbox" data-layer="terminator"><span class="layer-dot" style="background:#333333"></span>Day/Night Terminator</label>
+        </div>
+
+        <!-- Order Parameter -->
+        <div class="panel" id="order-param">
+            <h4>KT ORDER PARAMETER (df/dt)</h4>
+            <div class="state stable" id="op-state">LOADING...</div>
+            <div class="detail" id="op-detail">Schumann proxy: GOES X-ray fractional rate of change</div>
+        </div>
+
+        <!-- Kp -->
+        <div class="panel">
+            <h4>Kp INDEX</h4>
+            <div class="metric quiet" id="kp-metric">--</div>
+            <div class="detail" id="kp-detail">3-hourly geomagnetic activity</div>
+        </div>
+
+        <!-- Solar Wind -->
+        <div class="panel">
+            <h4>SOLAR WIND</h4>
+            <canvas id="sw-chart"></canvas>
+        </div>
+
+        <!-- X-ray flux -->
+        <div class="panel">
+            <h4>GOES X-RAY FLUX</h4>
+            <canvas id="xrs-chart"></canvas>
+        </div>
+
+        <!-- Sun View -->
+        <div class="panel" id="sun-panel">
+            <h4>SUN VIEW</h4>
+            <div id="sun-selector">
+                <button class="active" data-img="aia_193">193A</button>
+                <button data-img="aia_304">304A</button>
+                <button data-img="aia_131">131A</button>
+                <button data-img="hmi_mag">MAG</button>
+                <button data-img="hmi_cont">SPOTS</button>
+                <button data-img="lasco_c2">C2</button>
+                <button data-img="lasco_c3">C3</button>
+            </div>
+            <img id="sun-image" src="" alt="Solar image loading...">
+        </div>
+
+        <!-- Lunar -->
+        <div class="panel">
+            <h4>LUNAR / TIDAL</h4>
+            <div class="metric" id="lunar-metric">--</div>
+            <div class="detail" id="lunar-detail"></div>
+        </div>
+
+        <!-- Cosmic Rays -->
+        <div class="panel">
+            <h4>COSMIC RAYS (Forbush)</h4>
+            <div class="metric quiet" id="cr-metric">--</div>
+            <div class="detail" id="cr-detail">NMDB neutron monitors</div>
+        </div>
+    </div>
+
+    <!-- Three.js -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>
