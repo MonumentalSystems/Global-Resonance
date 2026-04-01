@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const API = 'http://localhost:8000/api';
+const API = window.location.port === '8001' ? '/api' : 'http://localhost:8001/api';
 const R = 1; // earth radius
 const POLL = 30_000; // 30s poll
 
