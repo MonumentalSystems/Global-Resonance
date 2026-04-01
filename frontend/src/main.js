@@ -478,7 +478,7 @@ function updSun(d) {
     window._si = d.images;
     const img = document.getElementById('sun-image');
     if (!img.dataset.loaded) {
-        img.src = d.images.aia_193;
+        img.src = d.images.eit_195 || d.images.aia_193 || Object.values(d.images)[0];
         img.dataset.loaded = '1';
     }
 }

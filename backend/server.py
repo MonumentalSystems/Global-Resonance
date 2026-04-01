@@ -265,27 +265,30 @@ def get_lunar():
 @app.get("/api/sun")
 def get_sun():
     """SDO/SOHO solar imagery URLs and active region info."""
-    # SDO latest images (updated every ~15 min)
-    sdo_base = "https://sdo.gsfc.nasa.gov/assets/img/latest"
+    # SOHO real-time images (reliable, always available)
+    soho = "https://soho.nascom.nasa.gov/data/realtime"
+    # SDO via LMSAL mirror (more reliable than sdo.gsfc.nasa.gov)
+    sdo = "https://sdo.gsfc.nasa.gov/assets/img/latest"
     return {
         "images": {
-            "aia_193": f"{sdo_base}/latest_1024_0193.jpg",      # Corona / flare sites
-            "aia_304": f"{sdo_base}/latest_1024_0304.jpg",      # Chromosphere
-            "aia_171": f"{sdo_base}/latest_1024_0171.jpg",      # Quiet corona
-            "aia_131": f"{sdo_base}/latest_1024_0131.jpg",      # Flare plasma
-            "hmi_mag": f"{sdo_base}/latest_1024_HMIBC.jpg",     # Magnetogram
-            "hmi_cont": f"{sdo_base}/latest_1024_HMIIF.jpg",    # Continuum (sunspots)
-            "lasco_c2": "https://soho.nascom.nasa.gov/data/realtime/c2/1024/latest.jpg",  # Coronagraph
-            "lasco_c3": "https://soho.nascom.nasa.gov/data/realtime/c3/1024/latest.jpg",
+            "eit_195": f"{soho}/eit_195/1024/latest.jpg",       # EIT 195A: corona (like AIA 193)
+            "eit_304": f"{soho}/eit_304/1024/latest.jpg",       # EIT 304A: chromosphere
+            "eit_171": f"{soho}/eit_171/1024/latest.jpg",       # EIT 171A: quiet corona
+            "eit_284": f"{soho}/eit_284/1024/latest.jpg",       # EIT 284A: active regions
+            "hmi_mag": f"{soho}/hmi_mag/1024/latest.jpg",       # HMI magnetogram
+            "hmi_con": f"{soho}/hmi_igr/1024/latest.jpg",       # HMI intensitygram (sunspots)
+            "lasco_c2": f"{soho}/c2/1024/latest.jpg",           # Coronagraph inner
+            "lasco_c3": f"{soho}/c3/1024/latest.jpg",           # Coronagraph outer
         },
         "description": {
-            "aia_193": "EUV 193A: corona, coronal holes, flare sites",
-            "aia_304": "EUV 304A: chromosphere, prominences",
-            "aia_131": "EUV 131A: hot flare plasma (10M K)",
+            "eit_195": "EIT 195A: hot corona, flare sites (~1.5 MK)",
+            "eit_304": "EIT 304A: chromosphere, prominences (~80K K)",
+            "eit_171": "EIT 171A: quiet corona, coronal loops (~1 MK)",
+            "eit_284": "EIT 284A: active regions (~2 MK)",
             "hmi_mag": "HMI magnetogram: surface magnetic field polarity",
-            "hmi_cont": "HMI continuum: sunspot structure",
-            "lasco_c2": "LASCO C2: inner coronagraph (CME detection)",
-            "lasco_c3": "LASCO C3: outer coronagraph (CME tracking)",
+            "hmi_con": "HMI intensitygram: sunspot structure",
+            "lasco_c2": "LASCO C2: inner coronagraph (2-6 Rsun, CME detection)",
+            "lasco_c3": "LASCO C3: outer coronagraph (4-30 Rsun, CME tracking)",
         },
     }
 
