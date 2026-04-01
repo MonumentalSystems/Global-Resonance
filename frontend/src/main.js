@@ -477,7 +477,10 @@ function updSun(d) {
     if (!d?.images) return;
     window._si = d.images;
     const img = document.getElementById('sun-image');
-    if (!img.src.startsWith('http')) img.src = d.images.aia_193 + '?t=' + Date.now();
+    if (!img.dataset.loaded) {
+        img.src = d.images.aia_193;
+        img.dataset.loaded = '1';
+    }
 }
 
 function updLunar(d) {

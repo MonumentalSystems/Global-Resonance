@@ -180,12 +180,19 @@ def get_kp():
     """Kp index from SWPC."""
     data = cached_fetch("kp", "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")
     if not data:
-        return {"kp": []}
+        return {"kp": [], "current": None}
     entries = []
-    for row in data[1:]:
+    for row in data:
         try:
-            entries.append({"time": row[0], "kp": float(row[1])})
-        except Exception:
+            # Format can be list-of-dicts or list-of-lists
+            if isinstance(row, dict):
+                entries.append({"time": row.get("time_tag", ""), "kp": float(row.get("Kp", row.get("kp", 0)))})
+            elif isinstance(row, (list, tuple)) and len(row) >= 2:
+                kp_val = row[1]
+                if isinstance(kp_val, str) and not kp_val.replace('.','').replace('-','').isdigit():
+                    continue  # skip header row
+                entries.append({"time": row[0], "kp": float(kp_val)})
+        except (ValueError, TypeError, KeyError):
             pass
     current = entries[-1]["kp"] if entries else None
     return {"kp": entries, "current": current}
