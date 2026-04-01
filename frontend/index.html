@@ -61,6 +61,21 @@
             font-size: 10px; font-weight: bold; }
         #detail a { color: #0cf; text-decoration: none; font-size: 9px; }
 
+        /* Time slider */
+        #time-control { position: absolute; bottom: 36px; left: 12px; width: calc(72vw - 24px);
+            z-index: 150; display: none; background: rgba(8,8,20,0.9);
+            border: 1px solid #1a1a33; border-radius: 4px; padding: 6px 12px; }
+        #time-control.visible { display: flex; align-items: center; gap: 10px; }
+        #time-control label { color: #0cf; font-size: 10px; white-space: nowrap; }
+        #time-control input[type=range] { flex: 1; accent-color: #0cf; }
+        #time-control .time-val { color: #fff; font-size: 11px; min-width: 60px; text-align: center; }
+        #time-control button { background: #141430; border: 1px solid #333; color: #ccc;
+            font-size: 9px; padding: 2px 8px; cursor: pointer; border-radius: 2px; }
+        #time-control button.on { background: #0cf; color: #050510; }
+
+        /* Paleomag chart in sidebar */
+        #paleomag-chart { width: 100%; height: 90px; }
+
         /* Sun */
         #sun-panel img { width: 100%; border-radius: 3px; margin-bottom: 3px; }
         .sun-btns { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 4px; }
@@ -105,6 +120,11 @@
             <label class="lt"><input type="checkbox" checked data-layer="subsolar"><span class="dot" style="background:#ff0"></span>Subsolar Point</label>
             <label class="lt"><input type="checkbox" checked data-layer="terminator"><span class="dot" style="background:#f60"></span>Terminator</label>
             <label class="lt"><input type="checkbox" data-layer="magnetometers"><span class="dot" style="background:#c4c"></span>Magnetometers</label>
+        </div>
+        <!-- Deep time -->
+        <div class="layer-section">
+            <h3>DEEP TIME</h3>
+            <label class="lt"><input type="checkbox" id="paleomag-toggle"><span class="dot" style="background:#f84"></span>Bronze Age Field</label>
         </div>
 
         <!-- Order Parameter -->
@@ -162,6 +182,24 @@
             <div class="m q" id="cr-metric">--</div>
             <div class="d" id="cr-detail">NMDB neutron monitors</div>
         </div>
+
+        <!-- Paleomag Bronze Age -->
+        <div class="p" id="paleomag-panel" style="display:none">
+            <h4>BRONZE AGE FIELD (pfm9k.2)</h4>
+            <canvas id="paleomag-chart"></canvas>
+            <div class="d">Levant (red) vs China (yellow) | dashed = 1200 BCE collapse</div>
+            <div style="margin-top:4px">
+                <a href="assets/bronze_age_field.png" target="_blank" style="color:#0cf;font-size:9px">Full analysis plot</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Time control slider -->
+    <div id="time-control">
+        <label>HISTORY</label>
+        <input type="range" id="time-slider" min="0" max="72" value="0" step="1">
+        <div class="time-val" id="time-val">LIVE</div>
+        <button id="time-live" class="on">LIVE</button>
     </div>
 
     <script type="importmap">

@@ -667,10 +667,115 @@ function showMagDetail(st) {
     panel.style.display = 'block';
 }
 
+// ===== PALEOMAG DEEP TIME =====
+let palemagData = null;
+
+async function loadPaleomag() {
+    palemagData = await fetchJSON('/paleomag');
+    if (palemagData?.sites) drawPaleomagChart();
+}
+
+function drawPaleomagChart() {
+    const c = document.getElementById('paleomag-chart');
+    if (!c || !palemagData?.sites) return;
+    const ctx = c.getContext('2d');
+    const w = c.width = c.clientWidth * 2;
+    const h = c.height = c.clientHeight * 2;
+    ctx.clearRect(0, 0, w, h);
+
+    const times = palemagData.times; // years BCE (positive = BCE)
+    const tMin = -500, tMax = 2500;
+    const fMin = 30, fMax = 80;
+
+    // Grid
+    ctx.strokeStyle = '#181833'; ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = (i/4) * h;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    // 1200 BCE marker
+    const x1200 = ((1200 - tMin) / (tMax - tMin)) * w;
+    ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(x1200, 0); ctx.lineTo(x1200, h); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ff4444'; ctx.font = '14px monospace';
+    ctx.fillText('1200', x1200 + 2, 14);
+
+    // Draw sites
+    const drawSite = (name, color, thick) => {
+        const vals = palemagData.sites[name]?.values;
+        if (!vals) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = thick ? 2.5 : 1;
+        ctx.globalAlpha = thick ? 1.0 : 0.5;
+        ctx.beginPath();
+        for (let i = 0; i < times.length; i++) {
+            const x = ((times[i] - tMin) / (tMax - tMin)) * w;
+            const y = h - ((vals[i] - fMin) / (fMax - fMin)) * h;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+    };
+
+    drawSite('Greece', '#44aaff', false);
+    drawSite('Anatolia', '#ffaa44', false);
+    drawSite('Egypt', '#44ff44', false);
+    drawSite('Levant', '#ff4444', true);
+    drawSite('China', '#ffff44', true);
+
+    // Labels
+    ctx.font = '12px monospace';
+    ctx.fillStyle = '#ff4444'; ctx.fillText('Levant', 4, h - 8);
+    ctx.fillStyle = '#ffff44'; ctx.fillText('China', 70, h - 8);
+}
+
+document.getElementById('paleomag-toggle')?.addEventListener('change', (e) => {
+    const panel = document.getElementById('paleomag-panel');
+    if (panel) panel.style.display = e.target.checked ? 'block' : 'none';
+    if (e.target.checked && !palemagData) loadPaleomag();
+});
+
+// ===== TIME SLIDER (historical replay) =====
+const timeSlider = document.getElementById('time-slider');
+const timeVal = document.getElementById('time-val');
+const timeLive = document.getElementById('time-live');
+let isLive = true;
+let historyHoursBack = 0;
+
+if (timeSlider) {
+    // Show the time control bar
+    document.getElementById('time-control').classList.add('visible');
+
+    timeSlider.addEventListener('input', () => {
+        historyHoursBack = parseInt(timeSlider.value);
+        if (historyHoursBack === 0) {
+            isLive = true;
+            timeVal.textContent = 'LIVE';
+            timeLive.classList.add('on');
+        } else {
+            isLive = false;
+            const d = new Date(Date.now() - historyHoursBack * 3600000);
+            timeVal.textContent = `-${historyHoursBack}h`;
+            timeLive.classList.remove('on');
+        }
+    });
+
+    timeLive.addEventListener('click', () => {
+        timeSlider.value = 0;
+        historyHoursBack = 0;
+        isLive = true;
+        timeVal.textContent = 'LIVE';
+        timeLive.classList.add('on');
+    });
+}
+
 // ===== Clock =====
 setInterval(() => {
+    const now = isLive ? new Date() : new Date(Date.now() - historyHoursBack * 3600000);
     document.getElementById('clock').textContent =
-        new Date().toISOString().replace('T',' ').substring(0,19) + ' UTC';
+        now.toISOString().replace('T',' ').substring(0,19) + ' UTC' + (isLive ? '' : ` (-${historyHoursBack}h)`);
 }, 1000);
 
 // ===== Poll =====
