@@ -380,6 +380,104 @@ def get_dst():
     }
 
 
+@app.get("/api/cme_predict")
+def get_cme_predict(
+    v_nose: float = 1689,
+    source_lon: float = 45,
+    half_angle: float = 46,
+    v_sw: float = None,
+    launch_time: str = "2026-03-30T03:24:00Z",
+):
+    """
+    Geometric CME transit prediction.
+
+    Uses flank correction + aerodynamic drag, which beats DONKI/ENLIL
+    for oblique sources (E30+).
+
+    v_effective = v_nose * cos(source_lon)
+    Then integrate drag: dv/dt = -gamma * (v - v_sw) * |v - v_sw|
+    """
+    from cme_transit import cme_transit, cme_dual_transit
+
+    # Use measured solar wind if not provided
+    if v_sw is None:
+        sw = cached_fetch("sw_plasma", "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json")
+        if sw:
+            for row in reversed(sw[1:]):
+                try:
+                    v_sw = float(row[2])
+                    if v_sw and v_sw > 200:
+                        break
+                except Exception:
+                    pass
+        if not v_sw:
+            v_sw = 400
+
+    dual = cme_dual_transit(v_nose, source_lon, half_angle, v_sw)
+    result = dual["ejecta"]
+
+    if not result.get("hit"):
+        return {"hit": False, "reason": result.get("reason", "CME misses Earth")}
+
+    launch_dt = datetime.fromisoformat(launch_time.replace("Z", "+00:00"))
+    arrival_dt = launch_dt + timedelta(hours=result["transit_hours"])
+
+    shock_result = dual["shock"]
+    shock_dt = launch_dt + timedelta(hours=shock_result["transit_hours"]) if shock_result.get("hit") else None
+
+    # Also compute the naive ballistic prediction for comparison
+    ballistic_h = (1.496e8 / v_nose) / 3600
+    ballistic_dt = launch_dt + timedelta(hours=ballistic_h)
+
+    # DONKI prediction (if available from cache)
+    donki_arrival = None
+    donki_data = cached_fetch("donki_cme",
+        "https://api.nasa.gov/DONKI/CME?startDate=2026-03-28&endDate=2026-03-31&api_key=DEMO_KEY",
+        ttl=600)
+    if donki_data:
+        for cme in donki_data:
+            for a in cme.get("cmeAnalyses", []):
+                if a.get("isEarthGB") and a.get("estimatedShockArrivalTime"):
+                    donki_arrival = a["estimatedShockArrivalTime"]
+
+    return {
+        "hit": True,
+        "launch": launch_time,
+        "v_nose": v_nose,
+        "source_lon": source_lon,
+        "half_angle": half_angle,
+        "v_sw_measured": round(v_sw),
+        "shock": {
+            "v_arrival": shock_result.get("v_arrival"),
+            "transit_hours": shock_result.get("transit_hours"),
+            "arrival": shock_dt.isoformat() if shock_dt else None,
+            "arrival_readable": shock_dt.strftime("%b %d %H:%M UTC") if shock_dt else None,
+            "note": "Shock front: near-ballistic nose speed, brief magnetopause compression",
+        },
+        "ejecta": {
+            "v_flank": result["v_flank"],
+            "v_arrival": result["v_arrival"],
+            "transit_hours": result["transit_hours"],
+            "arrival": arrival_dt.isoformat(),
+            "arrival_readable": arrival_dt.strftime("%b %d %H:%M UTC"),
+            "drag_deceleration_pct": result["drag_deceleration"],
+            "note": "Magnetic ejecta: flank speed + drag, sustained Bz south = geomagnetic storm",
+        },
+        "separation_hours": dual["separation_hours"],
+        "comparison": {
+            "ballistic_nose": {"transit_h": round(ballistic_h, 1), "arrival": ballistic_dt.strftime("%b %d %H:%M UTC")},
+            "donki_enlil": {"arrival": donki_arrival},
+            "ccmc_actual_shock": {"arrival": "2026-03-31T05:53Z", "transit_h": 26.5},
+            "swpc_ejecta_forecast": {"arrival": "2026-04-01T03:00-09:00Z"},
+            "geometric_model": {
+                "shock": shock_dt.strftime("%b %d %H:%M UTC") if shock_dt else None,
+                "ejecta": arrival_dt.strftime("%b %d %H:%M UTC"),
+                "method": f"shock=nose(weak drag) | ejecta=v*cos({source_lon})+drag(v_sw={v_sw:.0f})",
+            },
+        },
+    }
+
+
 @app.get("/api/cme")
 def get_cme():
     """Active CME tracking — cone projection for the globe."""
