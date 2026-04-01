@@ -3,3 +3,7 @@ uvicorn>=0.24.0
 httpx>=0.25.0
 numpy>=1.24.0
 pandas>=2.0.0
+
+# For paleomagnetic analysis (Paper XXIX - field reversals)
+# pip install pmagpy
+# https://github.com/PmagPy/PmagPy

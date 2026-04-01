@@ -590,6 +590,15 @@ def get_magnetometers():
     return {"stations": stations}
 
 
+@app.get("/api/paleomag")
+def get_paleomag():
+    """Bronze Age paleomagnetic field data from pfm9k.2."""
+    json_file = Path(__file__).parent.parent / "frontend" / "assets" / "bronze_age_field.json"
+    if json_file.exists():
+        return json.loads(json_file.read_text())
+    return {"error": "Run paleomag_plots.py first to generate data"}
+
+
 @app.get("/api/status")
 def get_status():
     """Overall system status combining all data sources."""
