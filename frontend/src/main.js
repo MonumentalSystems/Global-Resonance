@@ -37,18 +37,34 @@ scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x667788, 
 // ===== Globe =====
 const earthGeo = new THREE.SphereGeometry(R, 128, 128);
 const earthMat = new THREE.MeshPhongMaterial({
-    color: 0x1a3355, emissive: 0x0a1122, specular: 0x222244, shininess: 12,
+    color: 0x2244aa, emissive: 0x112244, specular: 0x222244, shininess: 12,
 });
 const earth = new THREE.Mesh(earthGeo, earthMat);
 scene.add(earth);
 
+// Add a wireframe so the globe is visible even without textures
+const wireGeo = new THREE.SphereGeometry(R * 1.001, 36, 18);
+const wireMat = new THREE.MeshBasicMaterial({ color: 0x334466, wireframe: true, transparent: true, opacity: 0.15 });
+const wireframe = new THREE.Mesh(wireGeo, wireMat);
+scene.add(wireframe);
+
 const tl = new THREE.TextureLoader();
-tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg', t => {
-    earthMat.map = t; earthMat.color.set(0xffffff); earthMat.emissive.set(0x000000); earthMat.needsUpdate = true;
-});
-tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg', t => {
-    earthMat.emissiveMap = t; earthMat.emissive.set(0x333333); earthMat.needsUpdate = true;
-});
+tl.crossOrigin = 'anonymous';
+tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg',
+    t => {
+        earthMat.map = t; earthMat.color.set(0xffffff); earthMat.emissive.set(0x000000);
+        earthMat.needsUpdate = true;
+        wireframe.visible = false; // hide wireframe once texture loads
+        console.log('Earth texture loaded');
+    },
+    undefined,
+    e => console.warn('Earth texture failed:', e)
+);
+tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg',
+    t => { earthMat.emissiveMap = t; earthMat.emissive.set(0x333333); earthMat.needsUpdate = true; },
+    undefined,
+    e => console.warn('Night texture failed:', e)
+);
 
 // Atmosphere
 const atmosMat = new THREE.ShaderMaterial({
@@ -701,6 +717,7 @@ function animate() {
 
     const rot = 0.00015;
     earth.rotation.y += rot;
+    wireframe.rotation.y += rot;
     for (const name of rotatingLayers) {
         if (layerGroups[name]) layerGroups[name].rotation.y += rot;
     }
