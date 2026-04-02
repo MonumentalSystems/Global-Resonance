@@ -29,7 +29,33 @@ def cme_dual_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-
     }
 
 
-def cme_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-8):
+def cme_hit_probability(source_lat_deg, source_lon_deg, half_angle_deg):
+    """
+    Estimate Earth impact probability from source geometry.
+
+    The TRUE angular offset from the Sun-Earth line includes BOTH
+    source longitude AND latitude. Coronagraph half-angles are 2D
+    projections that overstate the 3D cone width.
+
+    Calibrated on the X1.4 Mar 30 2026 miss: S27E45, half-angle 46 deg,
+    DONKI said 92% but the CME missed entirely.
+    """
+    offset = math.sqrt(source_lat_deg**2 + source_lon_deg**2)
+    margin = half_angle_deg - offset
+
+    if margin > 15:
+        return {"hit_prob": 0.90, "category": "LIKELY HIT", "offset": offset, "margin": margin}
+    elif margin > 5:
+        return {"hit_prob": 0.60, "category": "PROBABLE HIT", "offset": offset, "margin": margin}
+    elif margin > -5:
+        return {"hit_prob": 0.35, "category": "UNCERTAIN/GLANCING", "offset": offset, "margin": margin}
+    elif margin > -15:
+        return {"hit_prob": 0.10, "category": "PROBABLE MISS", "offset": offset, "margin": margin}
+    else:
+        return {"hit_prob": 0.02, "category": "MISS", "offset": offset, "margin": margin}
+
+
+def cme_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-8, source_lat_deg=0):
     """
     Compute CME transit time to 1 AU accounting for:
     1. Source geometry: Earth intercepts flank, not nose
@@ -45,12 +71,13 @@ def cme_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-8):
     Returns:
         dict with transit time, effective speed, arrival speed
     """
-    # Flank geometry: Earth is offset from CME nose by source_lon
-    # The CME material reaching Earth has lower radial speed
-    angle_from_nose = abs(source_lon_deg)
+    # Flank geometry: Earth is offset from CME nose by TOTAL angular offset
+    # (includes both longitude AND latitude of the source)
+    angle_from_nose = math.sqrt(source_lon_deg**2 + source_lat_deg**2)
 
     if angle_from_nose > half_angle_deg:
-        return {"hit": False, "reason": f"CME misses: offset {angle_from_nose} > half-angle {half_angle_deg}"}
+        return {"hit": False, "reason": f"CME misses: total offset {angle_from_nose:.1f} > half-angle {half_angle_deg}",
+                "offset": angle_from_nose}
 
     # Flank speed: radial component decreases with angle from nose
     # v_flank = v_nose * cos(angle) for a self-similar expansion
