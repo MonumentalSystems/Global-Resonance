@@ -31,28 +31,68 @@ def cme_dual_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-
 
 def cme_hit_probability(source_lat_deg, source_lon_deg, half_angle_deg):
     """
-    Estimate Earth impact probability from source geometry.
+    Estimate Earth impact probability and expected impact strength.
 
     The TRUE angular offset from the Sun-Earth line includes BOTH
     source longitude AND latitude. Coronagraph half-angles are 2D
     projections that overstate the 3D cone width.
 
-    Calibrated on the X1.4 Mar 30 2026 miss: S27E45, half-angle 46 deg,
-    DONKI said 92% but the CME missed entirely.
+    Calibrated on:
+    - X1.4 Mar 30 2026 (S27E45, HA=46): offset 52.5 > HA → GLANCING BLOW
+      (DONKI said 92% full impact, actual was weak flank clip at +56h, Kp=3)
+    - Uses graded response: CME cone edge is not a hard boundary.
+      The outermost ~10 degrees of the cone produce weak, slow, late impacts.
     """
     offset = math.sqrt(source_lat_deg**2 + source_lon_deg**2)
     margin = half_angle_deg - offset
 
+    # Impact fraction: how much of the CME nose energy reaches Earth
+    # Full nose: fraction = 1.0, Edge: fraction ~ 0.1, Outside: fraction ~ 0
     if margin > 15:
-        return {"hit_prob": 0.90, "category": "LIKELY HIT", "offset": offset, "margin": margin}
-    elif margin > 5:
-        return {"hit_prob": 0.60, "category": "PROBABLE HIT", "offset": offset, "margin": margin}
-    elif margin > -5:
-        return {"hit_prob": 0.35, "category": "UNCERTAIN/GLANCING", "offset": offset, "margin": margin}
-    elif margin > -15:
-        return {"hit_prob": 0.10, "category": "PROBABLE MISS", "offset": offset, "margin": margin}
+        frac = 1.0
+    elif margin > 0:
+        frac = 0.3 + 0.7 * (margin / 15)  # linear taper inside cone edge
+    elif margin > -10:
+        # GLANCING BLOW zone: CME edge extends ~10 deg beyond nominal half-angle
+        # (sheath and shock are wider than the ejecta cone)
+        frac = 0.15 * (1 + margin / 10)  # tapers from 0.15 to 0
     else:
-        return {"hit_prob": 0.02, "category": "MISS", "offset": offset, "margin": margin}
+        frac = 0.0
+
+    if frac > 0.7:
+        cat = "DIRECT HIT"
+        prob = 0.90
+    elif frac > 0.3:
+        cat = "FLANK HIT"
+        prob = 0.70
+    elif frac > 0.1:
+        cat = "GLANCING BLOW"
+        prob = 0.50
+    elif frac > 0.01:
+        cat = "WEAK CLIP"
+        prob = 0.25
+    else:
+        cat = "MISS"
+        prob = 0.05
+
+    # Expected Kp from impact fraction
+    # Full nose of fast CME: Kp 7-9
+    # Glancing blow: Kp 3-4
+    kp_expected = min(9, max(1, frac * 8 + 1))
+
+    # Speed reduction factor: flank/edge arrives slower
+    v_fraction = max(0.3, math.cos(math.radians(min(offset, 89))))
+
+    return {
+        "hit_prob": prob,
+        "category": cat,
+        "offset": round(offset, 1),
+        "margin": round(margin, 1),
+        "impact_fraction": round(frac, 2),
+        "kp_expected": round(kp_expected, 1),
+        "v_fraction": round(v_fraction, 2),
+        "note": f"offset={offset:.1f} vs HA={half_angle_deg}, margin={margin:.1f} deg",
+    }
 
 
 def cme_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-8, source_lat_deg=0):
@@ -75,9 +115,15 @@ def cme_transit(v_nose, source_lon_deg, half_angle_deg, v_sw=400, gamma=2e-8, so
     # (includes both longitude AND latitude of the source)
     angle_from_nose = math.sqrt(source_lon_deg**2 + source_lat_deg**2)
 
-    if angle_from_nose > half_angle_deg:
-        return {"hit": False, "reason": f"CME misses: total offset {angle_from_nose:.1f} > half-angle {half_angle_deg}",
+    # Graded response: CME shock/sheath extends ~10 deg beyond nominal half-angle
+    # Hard miss only if offset > half_angle + 10
+    if angle_from_nose > half_angle_deg + 10:
+        return {"hit": False, "reason": f"CME misses: total offset {angle_from_nose:.1f} >> half-angle {half_angle_deg}",
                 "offset": angle_from_nose}
+
+    # For glancing blows (offset > half_angle but within 10 deg):
+    # use the offset angle for speed calculation (outermost flank)
+    # and apply an additional slowdown factor
 
     # Flank speed: radial component decreases with angle from nose
     # v_flank = v_nose * cos(angle) for a self-similar expansion
