@@ -917,6 +917,7 @@ async function poll() {
     if (v(3)) {
         updSW(v(3));
         if (v(3).current_speed) swSpeed = v(3).current_speed;
+        if (v(3).current_density) swDensity = v(3).current_density;
         if (v(3).current_bz != null) updateMagnetosphereCompression(v(3).current_bz);
     }
     if (v(4)) updXRS(v(4));
@@ -1092,12 +1093,21 @@ connectSSE();
 async function pollSolar() {
     try {
         // Try /status first (single request with everything)
-        const statusResp = await fetch(`${SOLAR_API}/status`);
+        const [statusResp, feedsResp] = await Promise.all([
+            fetch(`${SOLAR_API}/status`),
+            fetch(`${SOLAR_API}/feeds`),
+        ]);
         const status = await statusResp.json();
+        const feeds = await feedsResp.json();
         if (status && !status.error) {
             updDetectors(status);
             if (status.escalation) updEscalation(status.escalation);
             if (status.stressor) updPathways(status.stressor);
+            // Feed live particle data to solar wind visualization
+            if (feeds && !feeds.error) updateSolarWindData(feeds);
+            // Extract proton detector score for SEP particles
+            const protonDet = status.fusion_diagnostics?.raw_scores?.find(d => d.name === 'proton');
+            if (protonDet) swProtonScore = protonDet.percentile_rank;
             const dot = document.getElementById('solar-conn');
             if (dot) dot.className = 'conn-dot live';
             const st = document.getElementById('solar-status');
@@ -1397,51 +1407,132 @@ function updateStormLevel(kp, dst) {
 
 buildMagnetosphere();
 
-// Solar Wind Particles
-const SW_COUNT = 600;
-let swParticles = null, swPositions = null, swVelocities = null, swSpeed = 400;
+// ===== SOLAR WIND PARTICLES (data-driven) =====
+// Three populations: protons (yellow), electrons (cyan), SEP high-energy (red)
+// Density, speed, color, and count respond to live solar monitor data
+const SW_MAX = 800;
+let swParticles = null, swPositions = null, swVelocities = null, swColors = null;
+let swSpeed = 400;        // km/s from live data
+let swDensity = 5;        // /cc from live data
+let swElectronFlux = 100; // pfu from live data
+let swProtonScore = 0;    // 0-1 from detector
+
+function initParticle(i, type) {
+    // type: 0=proton (bulk), 1=electron (fast), 2=SEP (high energy)
+    const ix = i * 3;
+    // Start from sun region (x=5-7), spread narrows for SEP
+    const spread = type === 2 ? 0.2 : 0.6;
+    swPositions[ix] = 5 + Math.random() * 2;
+    swPositions[ix + 1] = (Math.random() - 0.5) * spread;
+    swPositions[ix + 2] = (Math.random() - 0.5) * spread;
+    // Speed: protons=nominal, electrons=1.5x, SEP=2-3x
+    const baseSpeed = 0.008 + Math.random() * 0.004;
+    const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
+    swVelocities[ix] = -baseSpeed * speedMult;
+    swVelocities[ix + 1] = (Math.random() - 0.5) * 0.0008;
+    swVelocities[ix + 2] = (Math.random() - 0.5) * 0.0008;
+    // Color by type
+    if (type === 2) {
+        // SEP: hot red-orange
+        swColors[ix] = 1.0; swColors[ix + 1] = 0.3; swColors[ix + 2] = 0.1;
+    } else if (type === 1) {
+        // Electron: cyan-blue
+        swColors[ix] = 0.2 + Math.random() * 0.2; swColors[ix + 1] = 0.7 + Math.random() * 0.3; swColors[ix + 2] = 1.0;
+    } else {
+        // Proton: yellow-orange (bulk solar wind)
+        swColors[ix] = 0.9 + Math.random() * 0.1; swColors[ix + 1] = 0.7 + Math.random() * 0.2; swColors[ix + 2] = 0.15 + Math.random() * 0.15;
+    }
+}
+
 function buildSolarWind() {
     clearLayer('solar-wind');
     const layer = getLayer('solar-wind');
     const geo = new THREE.BufferGeometry();
-    swPositions = new Float32Array(SW_COUNT * 3);
-    swVelocities = new Float32Array(SW_COUNT * 3);
-    const colors = new Float32Array(SW_COUNT * 3);
-    for (let i = 0; i < SW_COUNT; i++) {
-        swPositions[i * 3] = 3 + Math.random() * 4;
-        swPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.8;
-        swPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.8;
-        swVelocities[i * 3] = -(0.008 + Math.random() * 0.006);
-        swVelocities[i * 3 + 1] = (Math.random() - 0.5) * 0.001;
-        swVelocities[i * 3 + 2] = (Math.random() - 0.5) * 0.001;
-        colors[i * 3] = 0.9 + Math.random() * 0.1;
-        colors[i * 3 + 1] = 0.8 + Math.random() * 0.2;
-        colors[i * 3 + 2] = 0.3 + Math.random() * 0.3;
+    swPositions = new Float32Array(SW_MAX * 3);
+    swVelocities = new Float32Array(SW_MAX * 3);
+    swColors = new Float32Array(SW_MAX * 3);
+
+    // Population split based on current data
+    const electronFrac = Math.min(0.4, swElectronFlux / 5000);  // up to 40% at 5000 pfu
+    const sepFrac = Math.min(0.2, swProtonScore * 0.2);          // up to 20% when proton detector fires
+    const protonFrac = 1 - electronFrac - sepFrac;
+
+    // Active particle count scales with density (more particles = denser wind)
+    const activeCount = Math.min(SW_MAX, Math.floor(200 + swDensity * 60));  // 200 base, +60 per /cc
+
+    for (let i = 0; i < SW_MAX; i++) {
+        const t = i / SW_MAX;
+        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
+        initParticle(i, type);
+        // Hide excess particles far away
+        if (i >= activeCount) {
+            swPositions[i * 3] = 99;
+            swPositions[i * 3 + 1] = 99;
+            swPositions[i * 3 + 2] = 99;
+        }
     }
+
     geo.setAttribute('position', new THREE.BufferAttribute(swPositions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    swParticles = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.012, vertexColors: true, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
+    geo.setAttribute('color', new THREE.BufferAttribute(swColors, 3));
+    swParticles = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.01, vertexColors: true, transparent: true, opacity: 0.7,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
     layer.add(swParticles);
 }
+
 function animateSolarWind() {
     if (!swPositions) return;
-    const sf = swSpeed / 400;
-    for (let i = 0; i < SW_COUNT; i++) {
+    const sf = swSpeed / 400;  // speed factor from live V_sw
+    const activeCount = Math.min(SW_MAX, Math.floor(200 + swDensity * 60));
+    const electronFrac = Math.min(0.4, swElectronFlux / 5000);
+    const sepFrac = Math.min(0.2, swProtonScore * 0.2);
+    const protonFrac = 1 - electronFrac - sepFrac;
+
+    for (let i = 0; i < SW_MAX; i++) {
+        if (i >= activeCount) continue;  // skip hidden particles
         const ix = i * 3;
-        swPositions[ix] += swVelocities[ix] * sf; swPositions[ix + 1] += swVelocities[ix + 1]; swPositions[ix + 2] += swVelocities[ix + 2];
+        const t = i / SW_MAX;
+        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
+        const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
+
+        swPositions[ix] += swVelocities[ix] * sf;
+        swPositions[ix + 1] += swVelocities[ix + 1];
+        swPositions[ix + 2] += swVelocities[ix + 2];
+
+        // Deflect around magnetosphere
         const dist = Math.sqrt(swPositions[ix] ** 2 + swPositions[ix + 1] ** 2 + swPositions[ix + 2] ** 2);
-        if (dist < 1.2 * magnetoCompression + 0.3) {
-            swVelocities[ix] += (swPositions[ix] / dist) * 0.003;
-            swVelocities[ix + 1] += (swPositions[ix + 1] / dist) * 0.003;
-            swVelocities[ix + 2] += (swPositions[ix + 2] / dist) * 0.003;
+        const bowDist = 1.2 * magnetoCompression + 0.3;
+        if (dist < bowDist) {
+            const nx = swPositions[ix] / dist, ny = swPositions[ix + 1] / dist, nz = swPositions[ix + 2] / dist;
+            swVelocities[ix] += nx * 0.003;
+            swVelocities[ix + 1] += ny * 0.003;
+            swVelocities[ix + 2] += nz * 0.003;
         }
-        if (swPositions[ix] < -3 || dist > 8) {
-            swPositions[ix] = 3 + Math.random() * 4; swPositions[ix + 1] = (Math.random() - 0.5) * 0.8; swPositions[ix + 2] = (Math.random() - 0.5) * 0.8;
-            swVelocities[ix] = -(0.008 + Math.random() * 0.006); swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001; swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
+
+        // Reset when past Earth or too far
+        if (swPositions[ix] < -3 || dist > 9) {
+            initParticle(i, type);
         }
     }
-    if (swParticles) swParticles.geometry.attributes.position.needsUpdate = true;
+
+    // Update colors in real-time (population fractions shift with data)
+    if (swParticles) {
+        swParticles.geometry.attributes.position.needsUpdate = true;
+        swParticles.geometry.attributes.color.needsUpdate = true;
+    }
 }
+
+// Update particle properties from live solar monitor feeds
+function updateSolarWindData(feeds) {
+    if (!feeds) return;
+    const sw = feeds.solar_wind_latest || feeds;
+    if (sw.speed != null) swSpeed = sw.speed;
+    if (sw.density != null) swDensity = sw.density;
+    const el = feeds.electron_latest || {};
+    if (el.flux != null) swElectronFlux = el.flux;
+}
+
 buildSolarWind();
 
 // Comet
