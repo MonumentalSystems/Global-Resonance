@@ -1420,27 +1420,27 @@ let swProtonScore = 0;    // 0-1 from detector
 function initParticle(i, type) {
     // type: 0=proton (bulk), 1=electron (fast), 2=SEP (high energy)
     const ix = i * 3;
-    // Start from sun region (x=5-7), spread narrows for SEP
-    const spread = type === 2 ? 0.2 : 0.6;
-    swPositions[ix] = 5 + Math.random() * 2;
+    // Start spread across the sun-Earth space (x=1.5 to 5.5) so they're visible
+    const spread = type === 2 ? 0.3 : 0.8;
+    swPositions[ix] = 1.5 + Math.random() * 4;
     swPositions[ix + 1] = (Math.random() - 0.5) * spread;
     swPositions[ix + 2] = (Math.random() - 0.5) * spread;
     // Speed: protons=nominal, electrons=1.5x, SEP=2-3x
-    const baseSpeed = 0.008 + Math.random() * 0.004;
+    const baseSpeed = 0.01 + Math.random() * 0.005;
     const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
     swVelocities[ix] = -baseSpeed * speedMult;
-    swVelocities[ix + 1] = (Math.random() - 0.5) * 0.0008;
-    swVelocities[ix + 2] = (Math.random() - 0.5) * 0.0008;
+    swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
+    swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
     // Color by type
     if (type === 2) {
-        // SEP: hot red-orange
-        swColors[ix] = 1.0; swColors[ix + 1] = 0.3; swColors[ix + 2] = 0.1;
+        // SEP: hot red-pink
+        swColors[ix] = 1.0; swColors[ix + 1] = 0.2; swColors[ix + 2] = 0.15;
     } else if (type === 1) {
-        // Electron: cyan-blue
-        swColors[ix] = 0.2 + Math.random() * 0.2; swColors[ix + 1] = 0.7 + Math.random() * 0.3; swColors[ix + 2] = 1.0;
+        // Electron: bright cyan
+        swColors[ix] = 0.3; swColors[ix + 1] = 0.85; swColors[ix + 2] = 1.0;
     } else {
-        // Proton: yellow-orange (bulk solar wind)
-        swColors[ix] = 0.9 + Math.random() * 0.1; swColors[ix + 1] = 0.7 + Math.random() * 0.2; swColors[ix + 2] = 0.15 + Math.random() * 0.15;
+        // Proton: bright yellow-white
+        swColors[ix] = 1.0; swColors[ix + 1] = 0.85 + Math.random() * 0.15; swColors[ix + 2] = 0.4 + Math.random() * 0.3;
     }
 }
 
@@ -1457,8 +1457,8 @@ function buildSolarWind() {
     const sepFrac = Math.min(0.2, swProtonScore * 0.2);          // up to 20% when proton detector fires
     const protonFrac = 1 - electronFrac - sepFrac;
 
-    // Active particle count scales with density (more particles = denser wind)
-    const activeCount = Math.min(SW_MAX, Math.floor(200 + swDensity * 60));  // 200 base, +60 per /cc
+    // Active particle count: always visible base, scales up with density
+    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));  // 400 base, +50 per /cc
 
     for (let i = 0; i < SW_MAX; i++) {
         const t = i / SW_MAX;
@@ -1475,16 +1475,17 @@ function buildSolarWind() {
     geo.setAttribute('position', new THREE.BufferAttribute(swPositions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(swColors, 3));
     swParticles = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 0.01, vertexColors: true, transparent: true, opacity: 0.7,
+        size: 0.018, vertexColors: true, transparent: true, opacity: 0.85,
         blending: THREE.AdditiveBlending, depthWrite: false,
+        sizeAttenuation: true,
     }));
     layer.add(swParticles);
 }
 
 function animateSolarWind() {
     if (!swPositions) return;
-    const sf = swSpeed / 400;  // speed factor from live V_sw
-    const activeCount = Math.min(SW_MAX, Math.floor(200 + swDensity * 60));
+    const sf = swSpeed / 400;
+    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));
     const electronFrac = Math.min(0.4, swElectronFlux / 5000);
     const sepFrac = Math.min(0.2, swProtonScore * 0.2);
     const protonFrac = 1 - electronFrac - sepFrac;
@@ -1510,9 +1511,17 @@ function animateSolarWind() {
             swVelocities[ix + 2] += nz * 0.003;
         }
 
-        // Reset when past Earth or too far
-        if (swPositions[ix] < -3 || dist > 9) {
-            initParticle(i, type);
+        // Reset when past Earth or too far — respawn from sun side
+        if (swPositions[ix] < -2 || dist > 8) {
+            const spread = type === 2 ? 0.3 : 0.8;
+            swPositions[ix] = 4 + Math.random() * 2;
+            swPositions[ix + 1] = (Math.random() - 0.5) * spread;
+            swPositions[ix + 2] = (Math.random() - 0.5) * spread;
+            const baseSpeed = 0.01 + Math.random() * 0.005;
+            const sm = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
+            swVelocities[ix] = -baseSpeed * sm;
+            swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
+            swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
         }
     }
 
