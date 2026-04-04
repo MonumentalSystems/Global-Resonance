@@ -1262,23 +1262,84 @@ function buildMagnetosphere() {
         }
     }
 
-    // --- BOW SHOCK (parabolic, like reference images) ---
-    const bowStandoff = 0.7 * comp + 0.35;
+    // --- BOW SHOCK SURFACE (glowing paraboloid at deflection boundary) ---
+    // Must match the particle deflection radius: 1.2 * comp + 0.3
+    const bowR = 1.2 * comp + 0.3;
+
+    // Build a parabolic shell mesh (sunward-facing half)
+    const bowSegs = 32, bowRings = 16;
+    const bowVerts = [], bowIdx = [];
+    for (let i = 0; i <= bowRings; i++) {
+        const t = i / bowRings;  // 0=nose, 1=flank
+        const flareAngle = t * Math.PI * 0.45;  // spread up to ~80 deg from nose
+        const rCross = bowR * Math.sin(flareAngle);
+        const xBow = bowR * Math.cos(flareAngle);
+        for (let j = 0; j <= bowSegs; j++) {
+            const a = (j / bowSegs) * Math.PI * 2;
+            bowVerts.push(xBow, rCross * Math.sin(a), rCross * Math.cos(a));
+        }
+    }
+    for (let i = 0; i < bowRings; i++) {
+        for (let j = 0; j < bowSegs; j++) {
+            const a = i * (bowSegs + 1) + j, b = a + bowSegs + 1;
+            bowIdx.push(a, b, a + 1, b, b + 1, a + 1);
+        }
+    }
+    const bowGeo = new THREE.BufferGeometry();
+    bowGeo.setAttribute('position', new THREE.Float32BufferAttribute(bowVerts, 3));
+    bowGeo.setIndex(bowIdx);
+    bowGeo.computeVertexNormals();
+
+    const bowMat = new THREE.ShaderMaterial({
+        uniforms: { uTime: { value: 0 }, uStorm: { value: storm } },
+        vertexShader: `
+            varying vec3 vPos;
+            varying vec3 vNormal;
+            void main() {
+                vPos = position;
+                vNormal = normalize(normalMatrix * normal);
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }`,
+        fragmentShader: `
+            uniform float uTime;
+            uniform float uStorm;
+            varying vec3 vPos;
+            varying vec3 vNormal;
+            void main() {
+                // Fresnel glow: edges bright, face-on transparent
+                float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.5);
+                // Nose is brightest (particles hit here hardest)
+                float noseBright = smoothstep(-0.5, 1.5, vPos.x) * 0.6;
+                // Shimmer effect (turbulent shock)
+                float shimmer = sin(vPos.x * 12.0 + vPos.y * 8.0 - uTime * 3.0) * 0.5 + 0.5;
+                shimmer = shimmer * 0.15;
+                // Storm color shift
+                vec3 color = mix(vec3(0.2, 0.6, 1.0), vec3(1.0, 0.4, 0.2), uStorm);
+                float alpha = (fresnel * 0.25 + noseBright * 0.1 + shimmer) * (0.4 + uStorm * 0.6);
+                alpha = clamp(alpha, 0.0, 0.35);
+                gl_FragColor = vec4(color, alpha);
+            }`,
+        transparent: true, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const bowMesh = new THREE.Mesh(bowGeo, bowMat);
+    bowMesh.name = 'bowshock';
+    layer.add(bowMesh);
+
+    // Wire rings at the shock front for extra definition
     for (let ring = 0; ring < 3; ring++) {
         const pts = [];
-        const r = bowStandoff + ring * 0.04;
-        for (let i = 0; i <= 80; i++) {
-            const a = (i / 80) * Math.PI * 2;
-            // Parabolic standoff shape
-            const yCross = r * Math.sin(a) * 0.95;
-            const zCross = r * Math.cos(a) * 0.95;
-            const xBow = r * 0.5 + 0.25 - (yCross * yCross + zCross * zCross) * 0.15;
-            pts.push(new THREE.Vector3(xBow, yCross, zCross));
+        const rr = bowR + ring * 0.03;
+        const flareAngle = (ring * 0.1 + 0.05) * Math.PI;
+        const rc = rr * Math.sin(flareAngle);
+        const xc = rr * Math.cos(flareAngle);
+        for (let i = 0; i <= 64; i++) {
+            const a = (i / 64) * Math.PI * 2;
+            pts.push(new THREE.Vector3(xc, rc * Math.sin(a), rc * Math.cos(a)));
         }
-        const bowColor = storm > 0.5 ? 0xff6644 : storm > 0.2 ? 0xffaa44 : 0x44aaff;
+        const bowLineColor = storm > 0.5 ? 0xff6644 : storm > 0.2 ? 0xffaa44 : 0x44aaff;
         layer.add(new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: (0.15 + storm * 0.15) / (ring * 0.5 + 1) })
+            new THREE.LineBasicMaterial({ color: bowLineColor, transparent: true, opacity: (0.2 + storm * 0.2) / (ring + 1) })
         ));
     }
 
@@ -1591,6 +1652,12 @@ function animate() {
     animateSolarWind();
     animateComet();
     if (currentBz < -3) animateReconnection();
+    // Animate bow shock shimmer
+    const bsLayer = layerGroups['magnetosphere'];
+    if (bsLayer) {
+        const bs = bsLayer.getObjectByName('bowshock');
+        if (bs?.material?.uniforms?.uTime) bs.material.uniforms.uTime.value = frame * 0.016;
+    }
     // Pulse aurora brightness
     if (stormLevel > 0.1) {
         const auroraLayer = layerGroups['magnetosphere'];
