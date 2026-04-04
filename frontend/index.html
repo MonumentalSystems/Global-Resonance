@@ -304,6 +304,44 @@
                 </div>
             </div>
 
+            <!-- Jelly Ball Prediction Tracker -->
+            <div class="p" id="jb-panel">
+                <h4>JELLY BALL OSCILLATOR</h4>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <div>
+                        <span style="font-size:9px;color:#556;">J = </span>
+                        <span style="font-size:16px;font-weight:bold;" id="jb-j">--</span>
+                        <span style="font-size:9px;color:#556;"> / J<sub>c</sub> = 0.637</span>
+                    </div>
+                    <div class="esc-badge esc-quiet" id="jb-phase" style="font-size:9px;padding:1px 6px;">QUIET</div>
+                </div>
+                <div class="det-bar-bg" style="height:12px;margin-bottom:3px;position:relative;">
+                    <div style="position:absolute;left:0;top:0;height:100%;background:rgba(255,68,68,0.15);border-right:2px solid #f44;" id="jb-jc-marker"></div>
+                    <div class="det-bar" id="jb-bar" style="width:0%;background:#4488ff;position:relative;z-index:1;"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:8px;color:#556;">
+                    <span>0</span>
+                    <span id="jb-gap">gap: --</span>
+                    <span>J<sub>c</sub></span>
+                    <span>1.0</span>
+                </div>
+                <div style="margin-top:4px;">
+                    <div class="field-row">
+                        <span class="field-name">Correlation len</span>
+                        <span class="field-val" id="jb-xi" style="color:#44aaff">-- km</span>
+                    </div>
+                    <div class="field-row">
+                        <span class="field-name">Bz Shield</span>
+                        <span class="field-val" id="jb-shield" style="color:#4f4">--</span>
+                    </div>
+                    <div class="field-row">
+                        <span class="field-name">Wavefront risk</span>
+                        <span class="field-val" id="jb-wf-risk" style="color:#f44">--</span>
+                    </div>
+                </div>
+                <div class="d" id="jb-detail" style="margin-top:3px;">--</div>
+            </div>
+
             <!-- Field Strengths -->
             <div class="p" id="fields-panel">
                 <h4>FIELD STRENGTHS</h4>

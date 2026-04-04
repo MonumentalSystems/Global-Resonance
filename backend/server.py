@@ -114,12 +114,17 @@ def get_earthquakes(hours: int = 72, min_mag: float = 4.5, limit: int = 500):
             a = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
             ang_dist = math.degrees(2 * math.asin(min(1.0, math.sqrt(a))))
 
-            if ang_dist < 30: zone = "eye"
-            elif ang_dist < 60: zone = "inner"
-            elif ang_dist < 100: zone = "wavefront"
-            elif ang_dist < 140: zone = "outer"
-            elif ang_dist < 165: zone = "far"
-            else: zone = "antipodal"
+            # Paper XXV 10-zone spatial response (earth_jelly_ball.py)
+            if ang_dist < 15: zone = "eye"              # 0.85x suppression
+            elif ang_dist < 30: zone = "inner"           # 0.92x compression
+            elif ang_dist < 60: zone = "transition"      # 0.98x near-neutral
+            elif ang_dist < 75: zone = "wavefront"       # 1.36x PEAK
+            elif ang_dist < 100: zone = "wavefront-tail"  # 1.09x enhancement
+            elif ang_dist < 120: zone = "neutral"        # 0.95x
+            elif ang_dist < 135: zone = "far-suppress"   # 0.82x suppression
+            elif ang_dist < 155: zone = "far-neutral"    # 0.90x
+            elif ang_dist < 165: zone = "pre-antipodal"  # 1.00x
+            else: zone = "antipodal"                     # 1.16x enhancement
 
             eqs.append({
                 "id": f.get("id", ""),
@@ -243,17 +248,23 @@ def get_xrs():
 
 @app.get("/api/subsolar")
 def get_subsolar():
-    """Current subsolar point + Jelly Ball zone radii."""
+    """Current subsolar point + Paper XXV Jelly Ball zone geometry."""
     ss = subsolar_point()
     return {
         **ss,
         "zones": [
-            {"name": "eye", "radius_deg": 30, "color": "#4444ff", "ratio": 0.85},
-            {"name": "inner", "radius_deg": 60, "color": "#44ff44", "ratio": 1.05},
-            {"name": "wavefront", "radius_deg": 100, "color": "#ff4444", "ratio": 1.36},
-            {"name": "outer", "radius_deg": 140, "color": "#ffff44", "ratio": 1.10},
-            {"name": "far", "radius_deg": 165, "color": "#888888", "ratio": 1.05},
-            {"name": "antipodal", "radius_deg": 180, "color": "#cc88cc", "ratio": 1.16},
+            # Paper XXV spatial response pattern (earth_jelly_ball.py)
+            # Each ring is drawn at its outer radius
+            {"name": "eye",            "radius_deg": 15,  "color": "#4444ff", "ratio": 0.85, "effect": "suppression"},
+            {"name": "inner",          "radius_deg": 30,  "color": "#6666cc", "ratio": 0.92, "effect": "compression"},
+            {"name": "transition",     "radius_deg": 60,  "color": "#44aa44", "ratio": 0.98, "effect": "near-neutral"},
+            {"name": "wavefront",      "radius_deg": 75,  "color": "#ff4444", "ratio": 1.36, "effect": "PEAK enhancement"},
+            {"name": "wavefront-tail", "radius_deg": 100, "color": "#ff8844", "ratio": 1.09, "effect": "enhancement"},
+            {"name": "neutral",        "radius_deg": 120, "color": "#888844", "ratio": 0.95, "effect": "neutral"},
+            {"name": "far-suppress",   "radius_deg": 135, "color": "#446688", "ratio": 0.82, "effect": "suppression"},
+            {"name": "far-neutral",    "radius_deg": 155, "color": "#666666", "ratio": 0.90, "effect": "far neutral"},
+            {"name": "pre-antipodal",  "radius_deg": 165, "color": "#886688", "ratio": 1.00, "effect": "neutral"},
+            {"name": "antipodal",      "radius_deg": 180, "color": "#cc88cc", "ratio": 1.16, "effect": "enhancement"},
         ],
         "terminator_lon": (ss["lon"] + 90) % 360 - 180,
     }
@@ -591,6 +602,170 @@ def get_magnetometers():
         pass
 
     return {"stations": stations}
+
+
+@app.get("/api/jellyball/prediction")
+def get_jellyball_prediction():
+    """
+    Jelly Ball coupled oscillator prediction tracker.
+
+    Computes the current state of the KT phase transition model:
+    - J (stiffness) from Kp/Dst/Bz
+    - Gap to critical threshold J_c = 2/pi
+    - Correlation length xi
+    - Active scenario (recovery, compression, relaxation burst)
+    - Zone-resolved earthquake risk modulation
+    - Compound event tracking
+    """
+    J_C = 2 / math.pi  # 0.6366 — critical threshold
+
+    # Get current data from cache
+    kp_data = CACHE.get("kp", {}).get("data")
+    sw_data = CACHE.get("sw_mag", {}).get("data")
+
+    # Current Kp
+    kp = 2.0
+    if kp_data:
+        try:
+            for row in reversed(kp_data if isinstance(kp_data, list) else []):
+                if isinstance(row, (list, tuple)) and len(row) >= 2:
+                    try:
+                        kp = float(row[1])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
+    # Current Bz
+    bz = 0.0
+    if sw_data:
+        try:
+            for row in reversed(sw_data[1:]):
+                v = row[3] if len(row) > 3 else None
+                if v not in (None, "", "null"):
+                    bz = float(v)
+                    break
+        except Exception:
+            pass
+
+    # Current solar wind speed
+    v_sw = 400.0
+    if sw_data:
+        try:
+            plasma = CACHE.get("sw_plasma", {}).get("data")
+            if plasma:
+                for row in reversed(plasma[1:]):
+                    v = row[2] if len(row) > 2 else None
+                    if v not in (None, "", "null"):
+                        v_sw = float(v)
+                        break
+        except Exception:
+            pass
+
+    # === Compute J (coupling stiffness) ===
+    # J is driven by geomagnetic compression:
+    #   - Kp is the primary proxy (Kp=0 -> J~0.50, Kp=9 -> J~0.85)
+    #   - Bz southward enhances reconnection (reduces J at magnetopause)
+    #   - Bz northward -> closed magnetosphere -> J from compression
+    #   - High V_sw -> dynamic pressure -> J increase
+    j_from_kp = 0.50 + kp * 0.04  # 0.50 at Kp=0, 0.86 at Kp=9
+    j_bz_mod = 0.0
+    if bz < -5:
+        j_bz_mod = -0.02 * abs(bz + 5) / 15  # southward reduces J (energy dissipated as aurora)
+    elif bz > 2:
+        j_bz_mod = 0.01 * bz / 10  # northward enhances compression
+    j_vsw_mod = max(0, (v_sw - 400) / 600) * 0.05  # high speed stream contribution
+    j_current = max(0.40, min(0.90, j_from_kp + j_bz_mod + j_vsw_mod))
+
+    # === Gap to critical ===
+    gap = J_C - j_current
+    gap_pct = gap / J_C * 100
+
+    # === Correlation length xi ===
+    # xi ~ a * exp(b / sqrt(|J/J_c - 1|))
+    # Diverges as J -> J_c (critical point)
+    j_ratio = j_current / J_C
+    delta = abs(j_ratio - 1.0)
+    if delta > 0.001:
+        xi_km = 1e4 * math.exp(1.5 / math.sqrt(delta))
+        xi_km = min(xi_km, 1e8)  # cap at reasonable value
+    else:
+        xi_km = 1e8  # at criticality, correlation length diverges
+    xi_rsun = xi_km / 6.957e5  # in solar radii
+
+    # === Phase determination ===
+    above_critical = j_current > J_C
+    near_critical = abs(gap_pct) < 10  # within 10% of J_c
+
+    if above_critical:
+        if kp >= 6:
+            phase = "STORM COMPRESSION"
+            phase_detail = "J >> J_c, system ordered, seismicity SUPPRESSED"
+        else:
+            phase = "ELEVATED"
+            phase_detail = "J > J_c, approaching relaxation"
+    elif near_critical:
+        phase = "CRITICAL TRANSITION"
+        phase_detail = f"J within {abs(gap_pct):.1f}% of J_c — maximum sensitivity"
+    elif gap_pct > 0 and gap_pct < 20:
+        phase = "POST-STORM RECOVERY"
+        phase_detail = "J dropping through J_c, relaxation burst possible"
+    else:
+        phase = "QUIET"
+        phase_detail = "J well below J_c, normal seismicity"
+
+    # === Bz shield state ===
+    if bz < -5:
+        shield = "ON"
+        shield_detail = "Southward Bz: reconnection dissipates energy as aurora"
+    elif bz > 2:
+        shield = "OFF"
+        shield_detail = "Northward Bz: closed magnetosphere, compression transmits to crust"
+    else:
+        shield = "TRANSITIONAL"
+        shield_detail = "Bz near zero: shield state uncertain"
+
+    # === Zone risk modulation ===
+    # When J > J_c: suppression near subsolar, enhancement at wavefront
+    # When J < J_c: normal background rates
+    if above_critical or near_critical:
+        zone_risk = {
+            "eye":            {"factor": 0.85, "risk": "SUPPRESSED"},
+            "inner":          {"factor": 0.92, "risk": "suppressed"},
+            "transition":     {"factor": 0.98, "risk": "near-normal"},
+            "wavefront":      {"factor": 1.36, "risk": "ENHANCED"},
+            "wavefront-tail": {"factor": 1.09, "risk": "enhanced"},
+            "neutral":        {"factor": 0.95, "risk": "normal"},
+            "far-suppress":   {"factor": 0.82, "risk": "SUPPRESSED"},
+            "far-neutral":    {"factor": 0.90, "risk": "slightly suppressed"},
+            "pre-antipodal":  {"factor": 1.00, "risk": "normal"},
+            "antipodal":      {"factor": 1.16, "risk": "enhanced"},
+        }
+    else:
+        zone_risk = {z: {"factor": 1.00, "risk": "baseline"} for z in
+            ["eye", "inner", "transition", "wavefront", "wavefront-tail",
+             "neutral", "far-suppress", "far-neutral", "pre-antipodal", "antipodal"]}
+
+    return {
+        "j_current": round(j_current, 4),
+        "j_critical": round(J_C, 4),
+        "gap": round(gap, 4),
+        "gap_pct": round(gap_pct, 1),
+        "above_critical": above_critical,
+        "phase": phase,
+        "phase_detail": phase_detail,
+        "correlation_length_km": round(xi_km, 0),
+        "correlation_length_rsun": round(xi_rsun, 1),
+        "shield": shield,
+        "shield_detail": shield_detail,
+        "zone_risk": zone_risk,
+        "inputs": {
+            "kp": round(kp, 2),
+            "bz": round(bz, 1),
+            "v_sw": round(v_sw, 0),
+        },
+    }
 
 
 @app.get("/api/paleomag")

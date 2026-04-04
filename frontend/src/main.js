@@ -536,6 +536,79 @@ function drawSeismogram(data) {
     if (ampEl) ampEl.textContent = `pk: ${maxAbs.toFixed(0)} counts`;
 }
 
+// ===== JELLY BALL PREDICTION TRACKER =====
+function updJellyBall(data) {
+    if (!data || data.error) return;
+
+    // J value and bar
+    const jEl = document.getElementById('jb-j');
+    if (jEl) {
+        jEl.textContent = data.j_current?.toFixed(3) || '--';
+        jEl.style.color = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#44ff44';
+    }
+
+    // J bar (0 to 1.0 scale)
+    const bar = document.getElementById('jb-bar');
+    if (bar) {
+        bar.style.width = Math.min(100, (data.j_current || 0) * 100) + '%';
+        bar.style.background = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#4488ff';
+    }
+
+    // J_c marker line position (at 63.66% of the bar)
+    const marker = document.getElementById('jb-jc-marker');
+    if (marker) marker.style.width = ((data.j_critical || 0.637) * 100) + '%';
+
+    // Gap
+    const gapEl = document.getElementById('jb-gap');
+    if (gapEl) {
+        const sign = data.gap > 0 ? '-' : '+';
+        gapEl.textContent = `${sign}${Math.abs(data.gap_pct || 0).toFixed(1)}% ${data.gap > 0 ? 'below' : 'above'} J_c`;
+    }
+
+    // Phase badge
+    const phaseEl = document.getElementById('jb-phase');
+    if (phaseEl) {
+        phaseEl.textContent = data.phase || '--';
+        const p = (data.phase || '').toLowerCase();
+        phaseEl.className = 'esc-badge ' + (
+            p.includes('storm') ? 'esc-flare' :
+            p.includes('critical') ? 'esc-active' :
+            p.includes('recovery') ? 'esc-elevated' : 'esc-quiet'
+        );
+        phaseEl.style.fontSize = '9px';
+        phaseEl.style.padding = '1px 6px';
+    }
+
+    // Correlation length
+    const xiEl = document.getElementById('jb-xi');
+    if (xiEl) {
+        const xi = data.correlation_length_km;
+        if (xi > 1e6) xiEl.textContent = `${(xi / 1e6).toFixed(1)}M km (${data.correlation_length_rsun} R_sun)`;
+        else if (xi > 1e3) xiEl.textContent = `${(xi / 1e3).toFixed(0)}k km`;
+        else xiEl.textContent = `${xi?.toFixed(0) || '--'} km`;
+        xiEl.style.color = xi > 1e6 ? '#ff4444' : xi > 1e5 ? '#ffaa44' : '#44aaff';
+    }
+
+    // Shield
+    const shieldEl = document.getElementById('jb-shield');
+    if (shieldEl) {
+        shieldEl.textContent = data.shield || '--';
+        shieldEl.style.color = data.shield === 'ON' ? '#4f4' : data.shield === 'OFF' ? '#f44' : '#ff4';
+    }
+
+    // Wavefront risk
+    const wfEl = document.getElementById('jb-wf-risk');
+    if (wfEl && data.zone_risk?.wavefront) {
+        const wf = data.zone_risk.wavefront;
+        wfEl.textContent = `${wf.factor}x (${wf.risk})`;
+        wfEl.style.color = wf.factor > 1.1 ? '#ff4444' : '#44ff44';
+    }
+
+    // Detail
+    const detailEl = document.getElementById('jb-detail');
+    if (detailEl) detailEl.textContent = data.phase_detail || '--';
+}
+
 // ===== FIELD STRENGTHS UPDATER =====
 function updFieldStrengths(data) {
     if (!data || data.error) return;
@@ -679,7 +752,7 @@ box.addEventListener('mousemove', e => {
         const hit = hits.find(h => h.object.userData?.mag);
         if (hit) {
             const eq = hit.object.userData, ageH = (Date.now() - eq.time) / 3600000;
-            const zc = { eye: '#44f', inner: '#4f4', wavefront: '#f44', outer: '#ff4', far: '#888', antipodal: '#c8c' };
+            const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
             tip.innerHTML = `<b style="color:#ff6644">M${eq.mag.toFixed(1)}</b> ${eq.place}<br>Depth: ${eq.depth?.toFixed(0) || '?'}km | ${ageH.toFixed(1)}h ago<br>${eq.ang_dist}deg | <span style="color:${zc[eq.zone] || '#888'}">${eq.zone}</span>`;
             tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
             box.style.cursor = 'pointer';
@@ -730,8 +803,8 @@ box.addEventListener('click', e => {
 function showDetail(eq) {
     const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
     const ageH = (Date.now() - eq.time) / 3600000, dt = new Date(eq.time);
-    const zc = { eye: '#44f', inner: '#4f4', wavefront: '#f44', outer: '#ff4', far: '#888', antipodal: '#c8c' };
-    const zr = { eye: '0.85x', inner: '1.05x', wavefront: '1.36x', outer: '1.10x', far: '1.05x', antipodal: '1.16x' };
+    const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
+    const zr = { eye: '0.85x', inner: '0.92x', transition: '0.98x', wavefront: '1.36x', 'wavefront-tail': '1.09x', neutral: '0.95x', 'far-suppress': '0.82x', 'far-neutral': '0.90x', 'pre-antipodal': '1.00x', antipodal: '1.16x' };
     content.innerHTML = `<h3>M${eq.mag.toFixed(1)} ${eq.place || 'Unknown'}</h3>
         <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T', ' ').substring(0, 19)} UTC</span></div>
         <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH * 60).toFixed(0) + ' min' : ageH.toFixed(1) + ' hours'} ago</span></div>
@@ -833,8 +906,9 @@ async function poll() {
         fetchJSON('/cosmic_rays'),     // 7
         fetchJSON('/dst'),             // 8
         fetchJSON('/magnetometers'),   // 9
-        fetchJSON('/field_strengths'), // 10
-        fetchJSON('/seismic/waveform'),// 11
+        fetchJSON('/field_strengths'),       // 10
+        fetchJSON('/seismic/waveform'),      // 11
+        fetchJSON('/jellyball/prediction'),  // 12
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -849,6 +923,7 @@ async function poll() {
     if (v(9)) updateMagnetometers(v(9));
     if (v(10)) updFieldStrengths(v(10));
     if (v(11)) drawSeismogram(v(11));
+    if (v(12)) updJellyBall(v(12));
 }
 poll();
 setInterval(poll, POLL);
