@@ -1058,7 +1058,7 @@ def get_status():
 # ========== Solar Monitor Proxy ==========
 # Proxies to the Rust solar-monitor running on SOLAR_MONITOR_URL (default localhost:3000)
 
-SOLAR_MONITOR_URL = os.environ.get("SOLAR_MONITOR_URL", "http://localhost:3000")
+SOLAR_MONITOR_URL = os.environ.get("SOLAR_MONITOR_URL", "http://localhost:8089")
 
 
 async def _solar_proxy(path: str):

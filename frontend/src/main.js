@@ -945,17 +945,30 @@ function scoreColor(score) { return score < 0.3 ? '#44ff44' : score < 0.5 ? '#aa
 
 function updDetectors(data) {
     if (!data || data.error) return;
-    const detectors = data.detectors || data;
+
+    // Solar monitor returns: { fused_score, alert, raw_scores: [{name, raw_score, percentile_rank}], detector_agreement }
+    // OR from /status: { fusion_diagnostics: { fused_score, raw_scores, detector_agreement } }
+    const diag = data.fusion_diagnostics || data;
+    const detectors = diag.raw_scores || diag.detectors || [];
+
     if (Array.isArray(detectors)) {
         detectors.forEach(d => {
-            const name = d.name?.toLowerCase()?.replace(/[_\s-]/g, '') || '';
+            const name = (d.name || '').toLowerCase().replace(/[_\s-]/g, '');
             const matchName = DET_NAMES.find(n => name.includes(n)) || name;
-            const bar = document.getElementById(`det-${matchName}`), score = document.getElementById(`ds-${matchName}`);
-            if (bar && d.score != null) { bar.style.width = Math.min(100, d.score * 100) + '%'; bar.style.background = scoreColor(d.score); }
-            if (score && d.score != null) score.textContent = d.score.toFixed(2);
+            // Use percentile_rank for bar (0-1 scale), raw_score for tooltip
+            const val = d.percentile_rank ?? d.score ?? d.raw_score ?? null;
+            const bar = document.getElementById(`det-${matchName}`);
+            const scoreEl = document.getElementById(`ds-${matchName}`);
+            if (bar && val != null) {
+                const pct = Math.min(100, val * 100);
+                bar.style.width = pct + '%';
+                bar.style.background = scoreColor(val);
+            }
+            if (scoreEl && val != null) scoreEl.textContent = val.toFixed(2);
         });
     }
-    const fused = data.fused_score ?? data.fused ?? null;
+
+    const fused = diag.fused_score ?? data.fused_score ?? data.fused ?? null;
     if (fused != null) {
         const fill = document.getElementById('fused-fill'), label = document.getElementById('fused-label');
         if (fill) { fill.style.width = Math.min(100, fused * 100) + '%'; fill.style.background = scoreColor(fused); }
@@ -963,20 +976,22 @@ function updDetectors(data) {
         const stF = document.getElementById('st-fused');
         if (stF) { stF.textContent = fused.toFixed(2); stF.className = 'v ' + (fused < 0.3 ? 'g' : fused < 0.7 ? '' : 'w'); }
     }
-    const agree = data.agreement ?? data.agreement_count ?? null;
+
+    const agree = diag.detector_agreement ?? data.detector_agreement ?? data.agreement ?? null;
     if (agree != null) { const el = document.getElementById('det-agreement'); if (el) el.textContent = agree; }
 }
 
 function updEscalation(data) {
     if (!data || data.error) return;
-    const level = (data.level || data.state || 'quiet').toLowerCase();
+    // Solar monitor returns: { level: "Quiet", level_label: "QUIET", peak_fused, hardness_spikes_in_window }
+    const level = (data.level_label || data.level || data.state || 'quiet').toLowerCase();
     const el = document.getElementById('esc-state');
     if (el) { el.textContent = level.toUpperCase(); el.className = 'esc-badge esc-' + level; }
     const stE = document.getElementById('st-esc');
     if (stE) { stE.textContent = level.toUpperCase(); stE.className = 'v ' + (level === 'quiet' ? 'g' : level === 'flare' ? 'w' : ''); }
     const detail = document.getElementById('esc-detail');
     if (detail) {
-        const spikes = data.hardness_spike_count ?? data.spikes ?? '--';
+        const spikes = data.hardness_spikes_in_window ?? data.hardness_spike_count ?? '--';
         const peak = data.peak_fused ?? data.peak ?? '--';
         detail.textContent = `Spikes: ${spikes} | Peak: ${typeof peak === 'number' ? peak.toFixed(2) : peak}`;
     }
@@ -987,24 +1002,43 @@ const PW_COLORS = { forbush: '#6644ff', heep: '#44ffaa', ssc: '#ff44aa', mansuro
 
 function updPathways(data) {
     if (!data || data.error) return;
-    const pathways = data.pathways || data;
+    // Solar monitor returns: array of {name, score, effect, active, details}
+    // OR from /status: { stressor: { pathways: [...], total } }
+    const stressor = data.stressor || data;
+    const pathways = stressor.pathways || (Array.isArray(data) ? data : []);
     let totalStress = 0;
+
     const pwList = Array.isArray(pathways) ? pathways : Object.values(pathways);
     pwList.forEach(pw => {
+        // Match "Forbush Chain" -> forbush, "SSC Telluric" -> ssc, "Lunar Tidal" -> lunar
         const name = (pw.name || pw.pathway || '').toLowerCase().replace(/[_\s-]/g, '');
         const matchName = PW_NAMES.find(n => name.includes(n));
         if (!matchName) return;
         const score = pw.score ?? pw.value ?? 0;
-        const dir = pw.direction || pw.effect || (score >= 0 ? '+' : '-');
-        const bar = document.getElementById(`pw-${matchName}`), dirEl = document.getElementById(`pwd-${matchName}`), scoreEl = document.getElementById(`pws-${matchName}`);
-        if (bar) { bar.style.width = Math.min(100, Math.abs(score) * 100) + '%'; bar.style.background = PW_COLORS[matchName] || '#888'; }
-        if (dirEl) { dirEl.textContent = dir === 'suppression' || dir === '-' ? '-' : '+'; dirEl.style.color = dir === 'suppression' || dir === '-' ? '#f44' : '#4f4'; }
+        const effect = (pw.effect || pw.direction || '').toLowerCase();
+        const isSuppression = effect.includes('suppress');
+        const bar = document.getElementById(`pw-${matchName}`);
+        const dirEl = document.getElementById(`pwd-${matchName}`);
+        const scoreEl = document.getElementById(`pws-${matchName}`);
+        if (bar) {
+            bar.style.width = Math.min(100, Math.abs(score) * 100) + '%';
+            bar.style.background = pw.active ? PW_COLORS[matchName] || '#888' : '#333';
+        }
+        if (dirEl) {
+            dirEl.textContent = isSuppression ? '-' : '+';
+            dirEl.style.color = isSuppression ? '#f44' : '#4f4';
+        }
         if (scoreEl) scoreEl.textContent = Math.abs(score).toFixed(2);
-        totalStress += score;
+        totalStress += isSuppression ? -Math.abs(score) : Math.abs(score);
     });
-    const stressIdx = data.total_stress ?? data.stressor_index ?? totalStress;
+
+    const stressIdx = stressor.total ?? data.total_stress ?? data.stressor_index ?? totalStress;
     const stressEl = document.getElementById('stress-val');
-    if (stressEl) { stressEl.textContent = (stressIdx >= 0 ? '+' : '') + stressIdx.toFixed(2); stressEl.style.color = stressIdx > 0.3 ? '#f44' : stressIdx > 0 ? '#ff4' : '#4f4'; }
+    if (stressEl) {
+        const val = typeof stressIdx === 'number' ? stressIdx : totalStress;
+        stressEl.textContent = (val >= 0 ? '+' : '') + val.toFixed(2);
+        stressEl.style.color = val > 0.3 ? '#f44' : val > 0 ? '#ff4' : '#4f4';
+    }
 }
 
 // SSE Streams
@@ -1020,9 +1054,12 @@ function connectSSE() {
         sse.onmessage = e => {
             try {
                 const d = JSON.parse(e.data);
-                if (d.fused_score != null || d.detectors) updDetectors(d);
-                if (d.escalation || d.level) updEscalation(d.escalation || d);
-                if (d.pathways || d.stressor) updPathways(d.pathways || d.stressor || d);
+                // Metrics SSE can send full status snapshots
+                if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d);
+                if (d.escalation) updEscalation(d.escalation);
+                else if (d.level || d.level_label) updEscalation(d);
+                if (d.stressor?.pathways) updPathways(d.stressor);
+                else if (d.pathways || Array.isArray(d)) updPathways(d);
                 if (d.feeds?.imf_bz != null) updateMagnetosphereCompression(d.feeds.imf_bz);
             } catch (_) { }
         };
@@ -1050,8 +1087,25 @@ function connectSSE() {
 }
 connectSSE();
 
-// Solar monitor polling fallback
+// Solar monitor polling fallback — uses /status for all-in-one, falls back to individual endpoints
 async function pollSolar() {
+    try {
+        // Try /status first (single request with everything)
+        const statusResp = await fetch(`${SOLAR_API}/status`);
+        const status = await statusResp.json();
+        if (status && !status.error) {
+            updDetectors(status);
+            if (status.escalation) updEscalation(status.escalation);
+            if (status.stressor) updPathways(status.stressor);
+            const dot = document.getElementById('solar-conn');
+            if (dot) dot.className = 'conn-dot live';
+            const st = document.getElementById('solar-status');
+            if (st) st.textContent = solarConnected ? '(LIVE)' : '(polling)';
+            return;
+        }
+    } catch (_) { }
+
+    // Fallback: individual endpoints
     try {
         const [detR, escR, pwR] = await Promise.allSettled([
             fetch(`${SOLAR_API}/detectors`).then(r => r.json()),
@@ -1061,12 +1115,6 @@ async function pollSolar() {
         if (detR.value && !detR.value.error) updDetectors(detR.value);
         if (escR.value && !escR.value.error) updEscalation(escR.value);
         if (pwR.value && !pwR.value.error) updPathways(pwR.value);
-        if (!detR.value?.error) {
-            const dot = document.getElementById('solar-conn');
-            if (dot && !solarConnected) dot.className = 'conn-dot live';
-            const st = document.getElementById('solar-status');
-            if (st && !solarConnected) st.textContent = '(polling)';
-        }
     } catch (_) { }
 }
 pollSolar();
