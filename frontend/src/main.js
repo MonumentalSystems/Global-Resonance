@@ -968,7 +968,7 @@ function updDetectors(data) {
         });
     }
 
-    const fused = diag.fused_score ?? data.fused_score ?? data.fused ?? null;
+    const fused = diag.fused_score ?? data.fused_score ?? data.fused_flare_score ?? data.fused ?? null;
     if (fused != null) {
         const fill = document.getElementById('fused-fill'), label = document.getElementById('fused-label');
         if (fill) { fill.style.width = Math.min(100, fused * 100) + '%'; fill.style.background = scoreColor(fused); }
@@ -977,7 +977,8 @@ function updDetectors(data) {
         if (stF) { stF.textContent = fused.toFixed(2); stF.className = 'v ' + (fused < 0.3 ? 'g' : fused < 0.7 ? '' : 'w'); }
     }
 
-    const agree = diag.detector_agreement ?? data.detector_agreement ?? data.agreement ?? null;
+    // detector_agreement can be at top level (/status) or inside diagnostics (/detectors)
+    const agree = data.detector_agreement ?? diag.detector_agreement ?? data.agreement ?? null;
     if (agree != null) { const el = document.getElementById('det-agreement'); if (el) el.textContent = agree; }
 }
 
