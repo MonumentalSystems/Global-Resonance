@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 const API = window.location.port === '8001' ? '/api' : 'http://localhost:8001/api';
 const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
@@ -20,7 +23,18 @@ const ctrl = new OrbitControls(camera, renderer.domElement);
 ctrl.enableDamping = true;
 ctrl.dampingFactor = 0.06;
 ctrl.minDistance = 1.15;
-ctrl.maxDistance = 6;
+ctrl.maxDistance = 12;
+
+// Bloom post-processing
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(box.clientWidth, box.clientHeight),
+    0.6,   // strength
+    0.4,   // radius
+    0.85   // threshold
+);
+composer.addPass(bloomPass);
 
 // ===== Lighting =====
 scene.add(new THREE.AmbientLight(0x334466, 0.6));
@@ -1136,33 +1150,24 @@ setInterval(pollSolar, POLL);
 // ============================================================
 
 // ===== SUN OBJECT =====
-// Glowing sphere at sunward position — field lines and wind originate from here
-const sunGroup = getLayer('sun-object');
+const SUN_X = 10; // far enough to be clearly separate from Earth
 fixedLayers.add('sun-object');
 (function buildSun() {
     const layer = getLayer('sun-object');
-    // Core
-    const sunGeo = new THREE.SphereGeometry(0.35, 32, 32);
-    const sunMat = new THREE.MeshBasicMaterial({ color: 0xffcc44 });
-    const sunMesh = new THREE.Mesh(sunGeo, sunMat);
-    sunMesh.position.set(6, 0, 0);
+    // Core — bright enough to trigger bloom
+    const sunMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.6, 32, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffdd55 })
+    );
+    sunMesh.position.set(SUN_X, 0, 0);
     layer.add(sunMesh);
     // Corona glow
-    const coronaGeo = new THREE.SphereGeometry(0.55, 32, 32);
-    const coronaMat = new THREE.ShaderMaterial({
-        vertexShader: `varying vec3 vNormal; void main(){ vNormal = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-        fragmentShader: `varying vec3 vNormal; void main(){ float i = pow(0.7 - dot(vNormal, vec3(0,0,1)), 3.0); gl_FragColor = vec4(1.0, 0.7, 0.2, i * 0.6); }`,
-        transparent: true, side: THREE.BackSide, depthWrite: false, blending: THREE.AdditiveBlending,
-    });
-    const corona = new THREE.Mesh(coronaGeo, coronaMat);
-    corona.position.set(6, 0, 0);
+    const corona = new THREE.Mesh(
+        new THREE.SphereGeometry(0.9, 32, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffaa22, transparent: true, opacity: 0.15, side: THREE.BackSide, depthWrite: false })
+    );
+    corona.position.set(SUN_X, 0, 0);
     layer.add(corona);
-    // Outer halo
-    const haloGeo = new THREE.SphereGeometry(0.8, 24, 24);
-    const haloMat = new THREE.MeshBasicMaterial({ color: 0xff8833, transparent: true, opacity: 0.04, side: THREE.BackSide, depthWrite: false });
-    const halo = new THREE.Mesh(haloGeo, haloMat);
-    halo.position.set(6, 0, 0);
-    layer.add(halo);
 })();
 
 // ===== MAGNETOSPHERE =====
@@ -1173,56 +1178,44 @@ let currentKp = 2;
 let currentDst = 0;
 let reconnectionPositions = null, reconnectionPts = null;
 
+// Bow shock standoff — particles deflect here, visuals drawn here
+const BOW_STANDOFF = () => 1.6 * magnetoCompression + 0.2;
+
 function buildMagnetosphere() {
     clearLayer('magnetosphere');
     const layer = getLayer('magnetosphere');
     const comp = magnetoCompression;
     const storm = stormLevel;
+    const S = 0.5; // scale factor for field lines (keeps them close to globe)
 
-    // Color: cyan in quiet, shifts toward white/red in storms
-    const fieldColor = new THREE.Color().setHSL(0.52 - storm * 0.15, 0.8 - storm * 0.2, 0.55 + storm * 0.15);
-    const fieldOpacity = 0.25 + storm * 0.3;
+    // --- DIPOLE FIELD LINES (bright cyan, 2 meridional planes) ---
+    // Like the reference: clean arcs from pole to pole, compressed sunward
+    const cyan = new THREE.Color(0x00ccff);
+    const cyanDim = new THREE.Color(0x2288aa);
 
-    // --- CLEAN DIPOLE FIELD LINES (like the reference images) ---
-    // Meridional planes: 6 evenly spaced around the axis
-    const nPlanes = 6;
-    const nShells = 5;  // L = 1.8, 2.3, 2.8, 3.3, 3.8
-    const nPts = 100;
-
-    for (let p = 0; p < nPlanes; p++) {
-        const phi = (p / nPlanes) * Math.PI;  // 0 to PI (half-turn, lines are symmetric)
-        for (let s = 0; s < nShells; s++) {
-            const L = 1.8 + s * 0.5;
+    for (let p = 0; p < 4; p++) {
+        const phi = (p / 4) * Math.PI; // 4 half-planes = 8 visual planes
+        for (let s = 0; s < 5; s++) {
+            const L = 2.0 + s * 0.7;
             const pts = [];
-            const scale = 0.38;  // fit around the globe
-
-            for (let j = 0; j <= nPts; j++) {
-                const theta = (j / nPts) * Math.PI;  // pole to pole
+            for (let j = 0; j <= 80; j++) {
+                const theta = (j / 80) * Math.PI;
                 const r = L * Math.sin(theta) * Math.sin(theta);
                 let x = r * Math.sin(theta) * Math.cos(phi);
                 let y = r * Math.cos(theta);
                 let z = r * Math.sin(theta) * Math.sin(phi);
 
-                // Sunward compression (paraboloid standoff)
-                if (x > 0) {
-                    const standoff = (2.2 + s * 0.3) * comp;
-                    const squash = Math.min(1, standoff / (Math.abs(x) + 0.5));
-                    x *= squash * comp;
-                }
-                // Nightside: stretch into tail, flatten toward current sheet
+                // Compress sunward side
+                if (x > 0) x *= comp * 0.7;
+                // Stretch nightside into tail
                 if (x < 0) {
-                    const stretch = 1 + (1 - comp) * 1.8 + s * 0.2;
-                    x *= stretch;
-                    // Outer shells flatten more into the tail
-                    const flattenFactor = Math.min(1, 1 - (s / nShells) * 0.4 * Math.pow(Math.abs(x * scale), 0.5));
-                    y *= flattenFactor;
+                    x *= 1 + (1 - comp) * 0.8 + s * 0.15;
+                    y *= 1 - s * 0.04 * Math.min(1, Math.abs(x * S));
                 }
-
-                pts.push(new THREE.Vector3(x * scale, y * scale, z * scale));
+                pts.push(new THREE.Vector3(x * S, y * S, z * S));
             }
-
-            const opacity = fieldOpacity * (1 - s * 0.1);
-            const color = s === 0 ? fieldColor : fieldColor.clone().offsetHSL(0, -s * 0.05, -s * 0.03);
+            const color = s < 2 ? cyan : cyanDim;
+            const opacity = s < 2 ? 0.5 : 0.25;
             layer.add(new THREE.Line(
                 new THREE.BufferGeometry().setFromPoints(pts),
                 new THREE.LineBasicMaterial({ color, transparent: true, opacity })
@@ -1230,197 +1223,73 @@ function buildMagnetosphere() {
         }
     }
 
-    // --- OPEN FIELD LINES (polar, stretch to sun and tail) ---
-    const openColor = new THREE.Color(0x88bbff);
-    for (let p = 0; p < 8; p++) {
-        const phi = (p / 8) * Math.PI * 2;
-        // North open lines -> stretch sunward / tailward
-        for (const sign of [1, -1]) {
-            const pts = [];
-            for (let j = 0; j <= 40; j++) {
-                const t = j / 40;
-                const startLat = 75;  // open field starts at ~75 deg
-                const theta = (startLat * Math.PI / 180) * (1 - t * 0.5);
-                const r = 2.0 * Math.sin(theta) * Math.sin(theta);
-                let x = r * Math.sin(theta) * Math.cos(phi);
-                let y = sign * r * Math.cos(theta);
-                let z = r * Math.sin(theta) * Math.sin(phi);
-                // Open lines extend far: sunward for dayside, tailward for nightside
-                const extend = t * 3.0;
-                if (Math.cos(phi) > 0) {
-                    x += extend * 0.8;  // toward sun
-                } else {
-                    x -= extend * 1.5;  // into tail
-                }
-                y *= (1 + t * 0.3);
-                pts.push(new THREE.Vector3(x * 0.35, y * 0.35, z * 0.35));
-            }
-            layer.add(new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints(pts),
-                new THREE.LineBasicMaterial({ color: openColor, transparent: true, opacity: 0.12 + storm * 0.1 })
-            ));
-        }
-    }
-
-    // --- BOW SHOCK SURFACE (glowing paraboloid at deflection boundary) ---
-    // Must match the particle deflection radius: 1.2 * comp + 0.3
-    const bowR = 1.2 * comp + 0.3;
-
-    // Build a parabolic shell mesh (sunward-facing half)
-    const bowSegs = 32, bowRings = 16;
-    const bowVerts = [], bowIdx = [];
-    for (let i = 0; i <= bowRings; i++) {
-        const t = i / bowRings;  // 0=nose, 1=flank
-        const flareAngle = t * Math.PI * 0.45;  // spread up to ~80 deg from nose
-        const rCross = bowR * Math.sin(flareAngle);
-        const xBow = bowR * Math.cos(flareAngle);
-        for (let j = 0; j <= bowSegs; j++) {
-            const a = (j / bowSegs) * Math.PI * 2;
-            bowVerts.push(xBow, rCross * Math.sin(a), rCross * Math.cos(a));
-        }
-    }
-    for (let i = 0; i < bowRings; i++) {
-        for (let j = 0; j < bowSegs; j++) {
-            const a = i * (bowSegs + 1) + j, b = a + bowSegs + 1;
-            bowIdx.push(a, b, a + 1, b, b + 1, a + 1);
-        }
-    }
-    const bowGeo = new THREE.BufferGeometry();
-    bowGeo.setAttribute('position', new THREE.Float32BufferAttribute(bowVerts, 3));
-    bowGeo.setIndex(bowIdx);
-    bowGeo.computeVertexNormals();
-
-    const bowMat = new THREE.ShaderMaterial({
-        uniforms: { uTime: { value: 0 }, uStorm: { value: storm } },
-        vertexShader: `
-            varying vec3 vPos;
-            varying vec3 vNormal;
-            void main() {
-                vPos = position;
-                vNormal = normalize(normalMatrix * normal);
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }`,
-        fragmentShader: `
-            uniform float uTime;
-            uniform float uStorm;
-            varying vec3 vPos;
-            varying vec3 vNormal;
-            void main() {
-                // Fresnel glow: edges bright, face-on transparent
-                float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.5);
-                // Nose is brightest (particles hit here hardest)
-                float noseBright = smoothstep(-0.5, 1.5, vPos.x) * 0.6;
-                // Shimmer effect (turbulent shock)
-                float shimmer = sin(vPos.x * 12.0 + vPos.y * 8.0 - uTime * 3.0) * 0.5 + 0.5;
-                shimmer = shimmer * 0.15;
-                // Storm color shift
-                vec3 color = mix(vec3(0.2, 0.6, 1.0), vec3(1.0, 0.4, 0.2), uStorm);
-                float alpha = (fresnel * 0.25 + noseBright * 0.1 + shimmer) * (0.4 + uStorm * 0.6);
-                alpha = clamp(alpha, 0.0, 0.35);
-                gl_FragColor = vec4(color, alpha);
-            }`,
-        transparent: true, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
-    });
-    const bowMesh = new THREE.Mesh(bowGeo, bowMat);
-    bowMesh.name = 'bowshock';
-    layer.add(bowMesh);
-
-    // Wire rings at the shock front for extra definition
-    for (let ring = 0; ring < 3; ring++) {
+    // --- BOW SHOCK (bright line arc at standoff distance, not a surface) ---
+    const bowR = BOW_STANDOFF();
+    const bowColor = storm > 0.5 ? 0xff6644 : 0x44ddff;
+    // Main arc — parabolic cross-section in 4 meridional planes
+    for (let m = 0; m < 4; m++) {
+        const angle = (m / 4) * Math.PI;
         const pts = [];
-        const rr = bowR + ring * 0.03;
-        const flareAngle = (ring * 0.1 + 0.05) * Math.PI;
-        const rc = rr * Math.sin(flareAngle);
-        const xc = rr * Math.cos(flareAngle);
-        for (let i = 0; i <= 64; i++) {
-            const a = (i / 64) * Math.PI * 2;
-            pts.push(new THREE.Vector3(xc, rc * Math.sin(a), rc * Math.cos(a)));
-        }
-        const bowLineColor = storm > 0.5 ? 0xff6644 : storm > 0.2 ? 0xffaa44 : 0x44aaff;
-        layer.add(new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: bowLineColor, transparent: true, opacity: (0.2 + storm * 0.2) / (ring + 1) })
-        ));
-    }
-
-    // --- MAGNETOPAUSE BOUNDARY (single clean paraboloid outline) ---
-    for (let meridian = 0; meridian < 4; meridian++) {
-        const pts = [];
-        const angle = (meridian / 4) * Math.PI;
-        for (let i = 0; i <= 60; i++) {
-            const t = i / 60;  // 0=nose, 1=tail
-            const xNose = 0.55 * comp + 0.15;
-            const x = xNose - t * (xNose + 2.8);
-            // Paraboloid flare
-            const rFlare = t < 0.2
-                ? t * 4.0 * (0.4 + 0.3 * comp)
-                : 0.2 * 4.0 * (0.4 + 0.3 * comp) + (t - 0.2) * 0.5;
-            pts.push(new THREE.Vector3(x, rFlare * Math.sin(angle), rFlare * Math.cos(angle)));
+        for (let i = 0; i <= 40; i++) {
+            const t = (i / 40) * Math.PI * 0.5; // 0 to 90 deg from nose
+            const rCross = bowR * Math.sin(t);
+            const xBow = bowR * Math.cos(t);
+            pts.push(new THREE.Vector3(xBow, rCross * Math.sin(angle), rCross * Math.cos(angle)));
         }
         layer.add(new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: 0x4488cc, transparent: true, opacity: 0.08 + storm * 0.08 })
+            new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.4 })
         ));
     }
+    // Cross-ring at nose
+    const noseRingPts = [];
+    for (let i = 0; i <= 64; i++) {
+        const a = (i / 64) * Math.PI * 2;
+        const rr = bowR * 0.3;
+        noseRingPts.push(new THREE.Vector3(bowR * 0.95, rr * Math.sin(a), rr * Math.cos(a)));
+    }
+    layer.add(new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(noseRingPts),
+        new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.35 })
+    ));
 
     // --- AURORA OVALS ---
     const auroraLat = 70 - storm * 12;
-    const auroraIntensity = 0.15 + storm * 0.55;
     for (const isNorth of [true, false]) {
-        for (let ring = 0; ring < 3; ring++) {
-            const lat = auroraLat - 2 + ring * 2;
-            const actualLat = isNorth ? lat : -lat;
-            const pts = [];
-            for (let i = 0; i <= 80; i++) pts.push(ll2v(actualLat, (i / 80) * 360 - 180, R * 1.008));
-            const line = new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints(pts),
-                new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: auroraIntensity * (ring === 1 ? 1 : 0.4) })
-            );
-            line.name = (isNorth ? 'aurora-n-' : 'aurora-s-') + ring;
-            layer.add(line);
-        }
+        const pts = [];
+        const lat = isNorth ? auroraLat : -auroraLat;
+        for (let i = 0; i <= 80; i++) pts.push(ll2v(lat, (i / 80) * 360 - 180, R * 1.008));
+        const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.15 + storm * 0.5 })
+        );
+        line.name = isNorth ? 'aurora-n-1' : 'aurora-s-1';
+        layer.add(line);
     }
 
-    // --- RING CURRENT ---
+    // --- RING CURRENT (torus) ---
     const rcIntensity = Math.min(1, Math.abs(currentDst) / 100);
-    const rcGeo = new THREE.TorusGeometry(0.28, 0.025 + storm * 0.03, 12, 48);
-    const rcColor = new THREE.Color().setHSL(0.08, 0.9, 0.3 + rcIntensity * 0.4);
-    const rcMesh = new THREE.Mesh(rcGeo, new THREE.MeshBasicMaterial({ color: rcColor, transparent: true, opacity: 0.06 + rcIntensity * 0.2, depthWrite: false }));
+    const rcMesh = new THREE.Mesh(
+        new THREE.TorusGeometry(0.25, 0.02 + storm * 0.02, 12, 48),
+        new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(0.08, 0.9, 0.4 + rcIntensity * 0.3), transparent: true, opacity: 0.06 + rcIntensity * 0.15, depthWrite: false })
+    );
     rcMesh.rotation.x = Math.PI / 2;
     layer.add(rcMesh);
-
-    // --- TAIL CURRENT SHEET ---
-    const tailPts = [];
-    for (let i = 0; i < 25; i++) {
-        const x = -0.35 - i * 0.1;
-        const hw = 0.12 + i * 0.015;
-        tailPts.push(new THREE.Vector3(x, 0.001, -hw), new THREE.Vector3(x, 0.001, hw));
-    }
-    layer.add(new THREE.LineSegments(
-        new THREE.BufferGeometry().setFromPoints(tailPts),
-        new THREE.LineBasicMaterial({ color: 0x6644aa, transparent: true, opacity: 0.05 + storm * 0.08 })
-    ));
 
     // --- RECONNECTION (Bz southward) ---
     if (currentBz < -3) {
         const nParts = 50;
-        const geo = new THREE.BufferGeometry();
         reconnectionPositions = new Float32Array(nParts * 3);
         for (let i = 0; i < nParts; i++) {
-            reconnectionPositions[i * 3] = 0.5 + Math.random() * 0.15;
-            reconnectionPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.2;
-            reconnectionPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.08;
+            reconnectionPositions[i * 3] = bowR * 0.9 + Math.random() * 0.1;
+            reconnectionPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.15;
+            reconnectionPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
         }
+        const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(reconnectionPositions, 3));
-        reconnectionPts = new THREE.Points(geo, new THREE.PointsMaterial({
-            color: 0xff4488, size: 0.006, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false,
-        }));
-        reconnectionPts.name = 'reconnection';
+        reconnectionPts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xff4488, size: 0.008, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
         layer.add(reconnectionPts);
-    } else {
-        reconnectionPositions = null;
-        reconnectionPts = null;
-    }
+    } else { reconnectionPositions = null; reconnectionPts = null; }
 }
 
 function animateReconnection() {
@@ -1481,9 +1350,9 @@ let swProtonScore = 0;    // 0-1 from detector
 function initParticle(i, type) {
     // type: 0=proton (bulk), 1=electron (fast), 2=SEP (high energy)
     const ix = i * 3;
-    // Start spread across the sun-Earth space (x=1.5 to 5.5) so they're visible
-    const spread = type === 2 ? 0.3 : 0.8;
-    swPositions[ix] = 1.5 + Math.random() * 4;
+    // Spread across the sun-Earth corridor
+    const spread = type === 2 ? 0.3 : 0.7;
+    swPositions[ix] = 2 + Math.random() * 7;
     swPositions[ix + 1] = (Math.random() - 0.5) * spread;
     swPositions[ix + 2] = (Math.random() - 0.5) * spread;
     // Speed: protons=nominal, electrons=1.5x, SEP=2-3x
@@ -1564,7 +1433,7 @@ function animateSolarWind() {
 
         // Deflect around magnetosphere
         const dist = Math.sqrt(swPositions[ix] ** 2 + swPositions[ix + 1] ** 2 + swPositions[ix + 2] ** 2);
-        const bowDist = 1.2 * magnetoCompression + 0.3;
+        const bowDist = BOW_STANDOFF();
         if (dist < bowDist) {
             const nx = swPositions[ix] / dist, ny = swPositions[ix + 1] / dist, nz = swPositions[ix + 2] / dist;
             swVelocities[ix] += nx * 0.003;
@@ -1573,9 +1442,9 @@ function animateSolarWind() {
         }
 
         // Reset when past Earth or too far — respawn from sun side
-        if (swPositions[ix] < -2 || dist > 8) {
-            const spread = type === 2 ? 0.3 : 0.8;
-            swPositions[ix] = 4 + Math.random() * 2;
+        if (swPositions[ix] < -2 || dist > 12) {
+            const spread = type === 2 ? 0.3 : 0.7;
+            swPositions[ix] = 6 + Math.random() * 3;
             swPositions[ix + 1] = (Math.random() - 0.5) * spread;
             swPositions[ix + 2] = (Math.random() - 0.5) * spread;
             const baseSpeed = 0.01 + Math.random() * 0.005;
@@ -1652,25 +1521,15 @@ function animate() {
     animateSolarWind();
     animateComet();
     if (currentBz < -3) animateReconnection();
-    // Animate bow shock shimmer
-    const bsLayer = layerGroups['magnetosphere'];
-    if (bsLayer) {
-        const bs = bsLayer.getObjectByName('bowshock');
-        if (bs?.material?.uniforms?.uTime) bs.material.uniforms.uTime.value = frame * 0.016;
-    }
-    // Pulse aurora brightness
+    // Pulse aurora
     if (stormLevel > 0.1) {
-        const auroraLayer = layerGroups['magnetosphere'];
-        if (auroraLayer) {
-            auroraLayer.children.forEach(child => {
-                if (child.name?.startsWith('aurora-n-') || child.name?.startsWith('aurora-s-')) {
-                    const base = child.name.includes('-1') ? stormLevel * 0.6 : stormLevel * 0.3;
-                    child.material.opacity = base * (0.8 + 0.2 * Math.sin(frame * 0.03 + (child.name.includes('n') ? 0 : 1)));
-                }
-            });
-        }
+        const ml = layerGroups['magnetosphere'];
+        if (ml) ml.children.forEach(c => {
+            if (c.name?.includes('aurora-'))
+                c.material.opacity = (0.15 + stormLevel * 0.5) * (0.8 + 0.2 * Math.sin(frame * 0.03));
+        });
     }
-    renderer.render(scene, camera);
+    composer.render();
 }
 animate();
 
@@ -1679,4 +1538,5 @@ window.addEventListener('resize', () => {
     camera.aspect = box.clientWidth / box.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(box.clientWidth, box.clientHeight);
+    composer.setSize(box.clientWidth, box.clientHeight);
 });
