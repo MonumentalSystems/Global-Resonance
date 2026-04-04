@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const API = window.location.port === '8001' ? '/api' : 'http://localhost:8001/api';
+const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
 const R = 1; // earth radius
 const POLL = 30_000; // 30s poll
 
@@ -23,9 +24,9 @@ ctrl.maxDistance = 6;
 
 // ===== Lighting =====
 scene.add(new THREE.AmbientLight(0x334466, 0.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-sun.position.set(5, 2, 5);
-scene.add(sun);
+const sunLight = new THREE.DirectionalLight(0xffffff, 1.4);
+sunLight.position.set(5, 2, 5);
+scene.add(sunLight);
 
 // Stars
 const starGeo = new THREE.BufferGeometry();
@@ -42,7 +43,6 @@ const earthMat = new THREE.MeshPhongMaterial({
 const earth = new THREE.Mesh(earthGeo, earthMat);
 scene.add(earth);
 
-// Add a wireframe so the globe is visible even without textures
 const wireGeo = new THREE.SphereGeometry(R * 1.001, 36, 18);
 const wireMat = new THREE.MeshBasicMaterial({ color: 0x334466, wireframe: true, transparent: true, opacity: 0.15 });
 const wireframe = new THREE.Mesh(wireGeo, wireMat);
@@ -51,50 +51,30 @@ scene.add(wireframe);
 const tl = new THREE.TextureLoader();
 tl.crossOrigin = 'anonymous';
 tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg',
-    t => {
-        earthMat.map = t; earthMat.color.set(0xffffff); earthMat.emissive.set(0x000000);
-        earthMat.needsUpdate = true;
-        wireframe.visible = false; // hide wireframe once texture loads
-        console.log('Earth texture loaded');
-    },
-    undefined,
-    e => console.warn('Earth texture failed:', e)
+    t => { earthMat.map = t; earthMat.color.set(0xffffff); earthMat.emissive.set(0x000000); earthMat.needsUpdate = true; wireframe.visible = false; },
+    undefined, e => console.warn('Earth texture failed:', e)
 );
 tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg',
     t => { earthMat.emissiveMap = t; earthMat.emissive.set(0x333333); earthMat.needsUpdate = true; },
-    undefined,
-    e => console.warn('Night texture failed:', e)
+    undefined, e => console.warn('Night texture failed:', e)
 );
 
 // Atmosphere
 const atmosMat = new THREE.ShaderMaterial({
-    vertexShader: `
-        varying vec3 vNormal;
-        void main() {
-            vNormal = normalize(normalMatrix * normal);
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }`,
-    fragmentShader: `
-        varying vec3 vNormal;
-        void main() {
-            float intensity = pow(0.65 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.5);
-            gl_FragColor = vec4(0.3, 0.6, 1.0, intensity * 0.4);
-        }`,
+    vertexShader: `varying vec3 vNormal; void main() { vNormal = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `varying vec3 vNormal; void main() { float intensity = pow(0.65 - dot(vNormal, vec3(0,0,1)), 2.5); gl_FragColor = vec4(0.3, 0.6, 1.0, intensity * 0.4); }`,
     transparent: true, side: THREE.BackSide, depthWrite: false,
 });
 scene.add(new THREE.Mesh(new THREE.SphereGeometry(R * 1.025, 64, 64), atmosMat));
 
-// ===== Coordinate helpers =====
+// ===== Coordinates =====
 function ll2v(lat, lon, r = R * 1.001) {
-    const p = (90 - lat) * Math.PI / 180;
-    const t = (lon + 180) * Math.PI / 180;
+    const p = (90 - lat) * Math.PI / 180, t = (lon + 180) * Math.PI / 180;
     return new THREE.Vector3(-r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t));
 }
 
 function greatCirclePoints(lat1, lon1, radiusDeg, nPts = 120) {
-    const pts = [];
-    const slat = lat1 * Math.PI / 180, slon = lon1 * Math.PI / 180;
-    const rd = radiusDeg * Math.PI / 180;
+    const pts = [], slat = lat1 * Math.PI / 180, slon = lon1 * Math.PI / 180, rd = radiusDeg * Math.PI / 180;
     for (let i = 0; i <= nPts; i++) {
         const a = (i / nPts) * 2 * Math.PI;
         const lat2 = Math.asin(Math.sin(slat) * Math.cos(rd) + Math.cos(slat) * Math.sin(rd) * Math.cos(a));
@@ -104,15 +84,16 @@ function greatCirclePoints(lat1, lon1, radiusDeg, nPts = 120) {
     return pts;
 }
 
-// ===== Layer system =====
+// ===== Layer System =====
 const layerGroups = {};
 const rotatingLayers = new Set();
+const fixedLayers = new Set(['magnetosphere', 'solar-wind', 'comet']);
 
 function getLayer(name) {
     if (!layerGroups[name]) {
         layerGroups[name] = new THREE.Group();
         scene.add(layerGroups[name]);
-        rotatingLayers.add(name);
+        if (!fixedLayers.has(name)) rotatingLayers.add(name);
     }
     return layerGroups[name];
 }
@@ -123,68 +104,39 @@ function clearLayer(name) {
     while (g.children.length) {
         const c = g.children[0];
         if (c.geometry) c.geometry.dispose();
-        if (c.material) {
-            if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
-            else c.material.dispose();
-        }
+        if (c.material) { if (Array.isArray(c.material)) c.material.forEach(m => m.dispose()); else c.material.dispose(); }
         g.remove(c);
     }
 }
 
 // ===== EARTHQUAKE LAYER =====
-// Color: recency (white/red = recent, blue/dim = old)
-// Size: animated ring = wave propagation
-// Height: inverse depth (shallow = tall, deep = flat)
+const eqWaves = [];
 
-const eqWaves = []; // active wave animations
-
-function recencyColor(ageHours) {
-    // 0h = white-hot, 6h = red, 24h = orange, 72h = dim blue
-    if (ageHours < 1) return new THREE.Color(1, 1, 1);
-    if (ageHours < 6) return new THREE.Color(1, 0.3 + 0.7 * (1 - ageHours / 6), 0.1);
-    if (ageHours < 24) return new THREE.Color(1, 0.3 * (1 - (ageHours - 6) / 18), 0);
-    if (ageHours < 48) return new THREE.Color(0.5, 0.2, 0.5);
+function recencyColor(ageH) {
+    if (ageH < 1) return new THREE.Color(1, 1, 1);
+    if (ageH < 6) return new THREE.Color(1, 0.3 + 0.7 * (1 - ageH / 6), 0.1);
+    if (ageH < 24) return new THREE.Color(1, 0.3 * (1 - (ageH - 6) / 18), 0);
+    if (ageH < 48) return new THREE.Color(0.5, 0.2, 0.5);
     return new THREE.Color(0.2, 0.2, 0.5);
 }
 
 function depthToHeight(depth) {
-    // Height IS depth: deep earthquakes get tall spikes
-    // 700km deep = 0.07 above surface (tall spike)
-    // 10km deep = 0.001 above surface (barely visible nub)
-    // The spike represents how far down the rupture actually is
-    const maxH = 0.07;
-    return maxH * Math.min((depth || 10) / 700, 1);
-}
-
-function magToWaveSpeed(mag) {
-    // Larger magnitude = faster/wider wave propagation
-    // M5 = slow, M7+ = fast
-    return 0.3 + (mag - 4) * 0.15;
-}
-
-function magToMaxRadius(mag) {
-    // Wave expands to this angular radius (degrees) then fades
-    return 2 + Math.pow(mag - 4, 2) * 1.5;
+    return 0.07 * Math.min((depth || 10) / 700, 1);
 }
 
 function updateEarthquakes(data) {
     clearLayer('earthquakes');
     eqWaves.length = 0;
     if (!data?.earthquakes) return;
-
-    const now = Date.now();
-    const layer = getLayer('earthquakes');
+    const now = Date.now(), layer = getLayer('earthquakes');
 
     data.earthquakes.forEach(eq => {
         const ageH = (now - eq.time) / 3600000;
         const col = recencyColor(ageH);
         const h = depthToHeight(eq.depth || 33);
         const baseSize = Math.max(0.003, Math.pow(eq.mag - 3.5, 1.3) * 0.003);
-
-        // Spike: height above globe = inverse depth
         const pos = ll2v(eq.lat, eq.lon, R + h);
 
-        // Core marker (spike tip)
         const coreGeo = new THREE.SphereGeometry(baseSize, 8, 8);
         const coreMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.95 });
         const core = new THREE.Mesh(coreGeo, coreMat);
@@ -192,84 +144,50 @@ function updateEarthquakes(data) {
         core.userData = eq;
         layer.add(core);
 
-        // Stem connecting to surface (shows depth visually)
         if (h > 0.005) {
             const surfPos = ll2v(eq.lat, eq.lon, R * 1.001);
             const stemGeo = new THREE.BufferGeometry().setFromPoints([surfPos, pos]);
-            const stemMat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.4 });
-            layer.add(new THREE.Line(stemGeo, stemMat));
+            layer.add(new THREE.Line(stemGeo, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.4 })));
         }
 
-        // Wave ring (for events < 24h old)
         if (ageH < 24) {
-            const maxRad = magToMaxRadius(eq.mag);
-            // Current wave radius based on age (propagation)
-            const waveSpeed = magToWaveSpeed(eq.mag); // degrees per hour
+            const waveSpeed = 0.3 + (eq.mag - 4) * 0.15;
+            const maxRad = 2 + Math.pow(eq.mag - 4, 2) * 1.5;
             const currentRad = Math.min(ageH * waveSpeed, maxRad);
             const opacity = Math.max(0, 0.5 * (1 - currentRad / maxRad));
-
             if (currentRad > 0.2 && opacity > 0.02) {
                 const ringPts = greatCirclePoints(eq.lat, eq.lon, currentRad, 60);
-                const ringGeo = new THREE.BufferGeometry().setFromPoints(ringPts);
-                const ringMat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity });
-                layer.add(new THREE.Line(ringGeo, ringMat));
+                layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts),
+                    new THREE.LineBasicMaterial({ color: col, transparent: true, opacity })));
             }
-
-            // For very recent events (< 2h), add animated expanding wave
             if (ageH < 2) {
-                eqWaves.push({
-                    lat: eq.lat, lon: eq.lon, mag: eq.mag,
-                    startTime: eq.time, color: col.clone(),
-                    maxRad, waveSpeed,
-                });
+                eqWaves.push({ lat: eq.lat, lon: eq.lon, mag: eq.mag, startTime: eq.time, color: col.clone(), maxRad, waveSpeed });
             }
         }
 
-        // Glow halo for M6+
         if (eq.mag >= 6.0) {
             const glowGeo = new THREE.SphereGeometry(baseSize * 4, 12, 12);
-            const glowMat = new THREE.MeshBasicMaterial({
-                color: col, transparent: true, opacity: 0.08 + (eq.mag - 6) * 0.03,
-            });
-            const glow = new THREE.Mesh(glowGeo, glowMat);
+            const glow = new THREE.Mesh(glowGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.08 + (eq.mag - 6) * 0.03 }));
             glow.position.copy(pos);
             layer.add(glow);
         }
     });
-
     document.getElementById('st-eqs').textContent = data.earthquakes.length;
 }
 
-// Animated wave rings (updated per frame)
-const waveLayer = getLayer('eq-waves');
-
 function animateWaves() {
     clearLayer('eq-waves');
-    const now = Date.now();
-    const layer = getLayer('eq-waves');
-
+    const now = Date.now(), layer = getLayer('eq-waves');
     for (const w of eqWaves) {
-        const ageH = (now - w.startTime) / 3600000;
-        const rad = ageH * w.waveSpeed;
+        const ageH = (now - w.startTime) / 3600000, rad = ageH * w.waveSpeed;
         if (rad > w.maxRad || rad < 0.1) continue;
-
         const opacity = 0.6 * (1 - rad / w.maxRad);
-        const pts = greatCirclePoints(w.lat, w.lon, rad, 80);
-        const geo = new THREE.BufferGeometry().setFromPoints(pts);
-        const mat = new THREE.LineBasicMaterial({
-            color: w.color, transparent: true, opacity: Math.max(0, opacity), linewidth: 2,
-        });
-        layer.add(new THREE.Line(geo, mat));
-
-        // Second ring (P-wave vs S-wave analogy)
+        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(greatCirclePoints(w.lat, w.lon, rad, 80)),
+            new THREE.LineBasicMaterial({ color: w.color, transparent: true, opacity: Math.max(0, opacity) })));
         const rad2 = rad * 0.6;
         if (rad2 > 0.1) {
-            const pts2 = greatCirclePoints(w.lat, w.lon, rad2, 80);
-            const geo2 = new THREE.BufferGeometry().setFromPoints(pts2);
-            const mat2 = new THREE.LineBasicMaterial({
-                color: w.color, transparent: true, opacity: opacity * 0.4,
-            });
-            layer.add(new THREE.Line(geo2, mat2));
+            layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(greatCirclePoints(w.lat, w.lon, rad2, 80)),
+                new THREE.LineBasicMaterial({ color: w.color, transparent: true, opacity: opacity * 0.4 })));
         }
     }
 }
@@ -279,13 +197,11 @@ function updateJellyBall(data) {
     clearLayer('jelly-ball');
     if (!data?.zones) return;
     const layer = getLayer('jelly-ball');
-
     data.zones.forEach(zone => {
         const col = parseInt(zone.color.replace('#', ''), 16);
         const pts = greatCirclePoints(data.lat, data.lon, zone.radius_deg);
-        const geo = new THREE.BufferGeometry().setFromPoints(pts);
-        const mat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.35 });
-        layer.add(new THREE.Line(geo, mat));
+        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.35 })));
     });
 }
 
@@ -294,66 +210,234 @@ function updateSubsolar(data) {
     clearLayer('subsolar');
     if (!data) return;
     const layer = getLayer('subsolar');
-
-    // Pulsing marker
     const geo = new THREE.SphereGeometry(0.015, 16, 16);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-    const m = new THREE.Mesh(geo, mat);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffff00 }));
     m.position.copy(ll2v(data.lat, data.lon, R * 1.008));
     m.name = 'subsolar-pulse';
     layer.add(m);
-
-    // Vertical beam
-    const beamPts = [ll2v(data.lat, data.lon, R * 1.008), ll2v(data.lat, data.lon, R * 1.15)];
-    const beamGeo = new THREE.BufferGeometry().setFromPoints(beamPts);
-    const beamMat = new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.3 });
-    layer.add(new THREE.Line(beamGeo, beamMat));
-
-    // Antipodal
+    layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([ll2v(data.lat, data.lon, R * 1.008), ll2v(data.lat, data.lon, R * 1.15)]),
+        new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.3 })));
     const antiLon = data.lon > 0 ? data.lon - 180 : data.lon + 180;
-    const antiGeo = new THREE.SphereGeometry(0.008, 12, 12);
-    const antiMat = new THREE.MeshBasicMaterial({ color: 0xcc88cc, transparent: true, opacity: 0.5 });
-    const anti = new THREE.Mesh(antiGeo, antiMat);
+    const anti = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 12), new THREE.MeshBasicMaterial({ color: 0xcc88cc, transparent: true, opacity: 0.5 }));
     anti.position.copy(ll2v(-data.lat, antiLon, R * 1.005));
     layer.add(anti);
-
-    // Update sun light
-    sun.position.copy(ll2v(data.lat, data.lon, 5));
+    sunLight.position.copy(ll2v(data.lat, data.lon, 5));
 }
 
-// ===== TERMINATOR =====
 function updateTerminator(data) {
     clearLayer('terminator');
     if (!data) return;
-    const pts = greatCirclePoints(data.lat, data.lon, 90, 180);
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.2 });
-    getLayer('terminator').add(new THREE.Line(geo, mat));
+    getLayer('terminator').add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(greatCirclePoints(data.lat, data.lon, 90, 180)),
+        new THREE.LineBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.2 })));
 }
 
-// ===== PLATE BOUNDARIES =====
+// ===== PLATE BOUNDARIES (GeoJSON-labeled) =====
+const BOUNDARY_COLORS = {
+    divergent: 0x44aaff,
+    convergent: 0xff6644,
+    transform: 0xffaa44,
+    unknown: 0x445566,
+};
+
 async function loadPlates() {
     try {
-        const resp = await fetch('src/plates.json');
-        const segs = await resp.json();
-        const mat = new THREE.LineBasicMaterial({ color: 0x445566, transparent: true, opacity: 0.35 });
+        const resp = await fetch(`${API}/plates`);
+        const geojson = await resp.json();
+        clearLayer('plates');
         const layer = getLayer('plates');
+        const legendEl = document.getElementById('plate-legend');
+        const namesUsed = new Set();
 
-        for (const seg of segs) {
-            if (seg.length < 2) continue;
+        if (!geojson.features) {
+            // Fallback: old plates.json format
+            const segs = geojson;
+            const mat = new THREE.LineBasicMaterial({ color: 0x445566, transparent: true, opacity: 0.35 });
+            for (const seg of segs) {
+                if (seg.length < 2) continue;
+                const pts = [];
+                for (let i = 0; i < seg.length; i++) {
+                    if (i > 0 && Math.abs(seg[i][0] - seg[i - 1][0]) > 90) {
+                        if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+                        pts.length = 0;
+                    }
+                    pts.push(ll2v(seg[i][1], seg[i][0], R * 1.0005));
+                }
+                if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+            }
+            return;
+        }
+
+        for (const feature of geojson.features) {
+            const props = feature.properties || {};
+            const coords = feature.geometry?.coordinates || [];
+            if (coords.length < 2) continue;
+
+            const btype = props.boundary_type || 'unknown';
+            const color = new THREE.Color(props.color || '#445566');
+            const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.45 });
+
             const pts = [];
-            for (let i = 0; i < seg.length; i++) {
-                if (i > 0 && Math.abs(seg[i][0] - seg[i-1][0]) > 90) {
-                    if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+            for (let i = 0; i < coords.length; i++) {
+                if (i > 0 && Math.abs(coords[i][0] - coords[i - 1][0]) > 90) {
+                    if (pts.length >= 2) {
+                        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+                        line.userData = { type: 'plate', name: props.name, boundary_type: btype };
+                        layer.add(line);
+                    }
                     pts.length = 0;
                 }
-                pts.push(ll2v(seg[i][1], seg[i][0], R * 1.0005));
+                pts.push(ll2v(coords[i][1], coords[i][0], R * 1.0005));
             }
-            if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+            if (pts.length >= 2) {
+                const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+                line.userData = { type: 'plate', name: props.name, boundary_type: btype };
+                layer.add(line);
+            }
+
+            namesUsed.add(props.name);
         }
-    } catch (e) { console.warn('Plates:', e.message); }
+
+        // Render plate legend
+        if (legendEl) {
+            const sorted = [...namesUsed].sort();
+            legendEl.innerHTML = sorted.map(name => {
+                const feat = geojson.features.find(f => f.properties.name === name);
+                const color = feat?.properties.color || '#445566';
+                const btype = feat?.properties.boundary_type || '';
+                const symbol = btype === 'convergent' ? 'C' : btype === 'divergent' ? 'D' : 'T';
+                return `<span class="plate-tag"><span class="swatch" style="background:${color}"></span>${name} (${symbol})</span>`;
+            }).join('');
+        }
+
+        console.log(`Plates loaded: ${geojson.features.length} segments, ${namesUsed.size} named boundaries`);
+    } catch (e) {
+        console.warn('Plates:', e.message);
+        // Fallback to old plates.json
+        try {
+            const resp = await fetch('src/plates.json');
+            const segs = await resp.json();
+            const mat = new THREE.LineBasicMaterial({ color: 0x445566, transparent: true, opacity: 0.35 });
+            const layer = getLayer('plates');
+            for (const seg of segs) {
+                if (seg.length < 2) continue;
+                const pts = [];
+                for (let i = 0; i < seg.length; i++) {
+                    if (i > 0 && Math.abs(seg[i][0] - seg[i - 1][0]) > 90) {
+                        if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+                        pts.length = 0;
+                    }
+                    pts.push(ll2v(seg[i][1], seg[i][0], R * 1.0005));
+                }
+                if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+            }
+        } catch (e2) { console.warn('Plates fallback failed:', e2.message); }
+    }
 }
 loadPlates();
+
+// ===== GEOJSON / KML LOADER =====
+function renderGeoJSON(geojson, layerName = 'geojson') {
+    const layer = getLayer(layerName);
+    const features = geojson.features || (geojson.geometry ? [geojson] : []);
+
+    for (const feature of features) {
+        const geom = feature.geometry || feature;
+        const props = feature.properties || {};
+        const color = new THREE.Color(props.color || props.stroke || '#44cccc');
+
+        if (geom.type === 'LineString') {
+            renderLineString(geom.coordinates, color, layer, props);
+        } else if (geom.type === 'MultiLineString') {
+            for (const line of geom.coordinates) renderLineString(line, color, layer, props);
+        } else if (geom.type === 'Polygon') {
+            for (const ring of geom.coordinates) renderLineString(ring, color, layer, props);
+        } else if (geom.type === 'MultiPolygon') {
+            for (const poly of geom.coordinates) for (const ring of poly) renderLineString(ring, color, layer, props);
+        } else if (geom.type === 'Point') {
+            const [lon, lat] = geom.coordinates;
+            const marker = new THREE.Mesh(new THREE.SphereGeometry(0.005, 8, 8), new THREE.MeshBasicMaterial({ color }));
+            marker.position.copy(ll2v(lat, lon, R * 1.003));
+            marker.userData = props;
+            layer.add(marker);
+        }
+    }
+}
+
+function renderLineString(coords, color, layer, props) {
+    const pts = [];
+    for (let i = 0; i < coords.length; i++) {
+        if (i > 0 && Math.abs(coords[i][0] - coords[i - 1][0]) > 90) {
+            if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+                new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 })));
+            pts.length = 0;
+        }
+        pts.push(ll2v(coords[i][1], coords[i][0], R * 1.001));
+    }
+    if (pts.length >= 2) {
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 }));
+        line.userData = props;
+        layer.add(line);
+    }
+}
+
+function parseKML(text) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, 'text/xml');
+    const features = [];
+    doc.querySelectorAll('Placemark').forEach(pm => {
+        const name = pm.querySelector('name')?.textContent || '';
+        const coordEl = pm.querySelector('coordinates');
+        if (!coordEl) return;
+        const coords = coordEl.textContent.trim().split(/\s+/).map(c => {
+            const [lon, lat] = c.split(',').map(Number);
+            return [lon, lat];
+        }).filter(c => !isNaN(c[0]) && !isNaN(c[1]));
+        if (coords.length >= 2) {
+            features.push({ type: 'Feature', properties: { name }, geometry: { type: 'LineString', coordinates: coords } });
+        } else if (coords.length === 1) {
+            features.push({ type: 'Feature', properties: { name }, geometry: { type: 'Point', coordinates: coords[0] } });
+        }
+    });
+    return { type: 'FeatureCollection', features };
+}
+
+// Drag-and-drop handler
+const dropZone = document.getElementById('drop-zone');
+if (dropZone) {
+    ['dragenter', 'dragover'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('over'); }));
+    ['dragleave', 'drop'].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.remove('over')));
+    dropZone.addEventListener('drop', async e => {
+        e.preventDefault();
+        for (const file of e.dataTransfer.files) {
+            const text = await file.text();
+            const isKML = file.name.endsWith('.kml') || file.name.endsWith('.kmz');
+            const geojson = isKML ? parseKML(text) : JSON.parse(text);
+            clearLayer('geojson');
+            renderGeoJSON(geojson, 'geojson');
+            // Enable the layer checkbox
+            const cb = document.querySelector('[data-layer="geojson"]');
+            if (cb) cb.checked = true;
+            if (layerGroups['geojson']) layerGroups['geojson'].visible = true;
+            dropZone.textContent = `Loaded: ${file.name} (${geojson.features?.length || 0} features)`;
+        }
+    });
+}
+
+// ===== MAGNETOMETER STATIONS =====
+function updateMagnetometers(data) {
+    clearLayer('magnetometers');
+    if (!data?.stations) return;
+    const layer = getLayer('magnetometers');
+    data.stations.forEach(st => {
+        const pos = ll2v(st.lat, st.lon, R * 1.004);
+        const mat = new THREE.MeshBasicMaterial({ color: st.network === 'USGS' ? 0xcc44cc : 0x44cccc, transparent: true, opacity: 0.8 });
+        const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.008, 0), mat);
+        mesh.position.copy(pos);
+        mesh.userData = { type: 'magnetometer', ...st };
+        layer.add(mesh);
+    });
+}
 
 // ===== SIDEBAR DATA =====
 async function fetchJSON(ep) {
@@ -367,48 +451,26 @@ function drawChart(id, data, opts = {}) {
     const ctx = c.getContext('2d');
     const w = c.width = c.clientWidth * 2, h = c.height = c.clientHeight * 2;
     ctx.clearRect(0, 0, w, h);
-
     const vals = data.map(d => d.value).filter(v => v != null && isFinite(v));
     if (vals.length < 2) return;
-    const mn = opts.min ?? Math.min(...vals), mx = opts.max ?? Math.max(...vals);
-    const rng = mx - mn || 1;
-
-    // Grid
+    const mn = opts.min ?? Math.min(...vals), mx = opts.max ?? Math.max(...vals), rng = mx - mn || 1;
     ctx.strokeStyle = '#181833'; ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) { const y = (i/4)*h; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
-
-    // Zero line
+    for (let i = 0; i <= 4; i++) { const y = (i / 4) * h; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
     if (mn < 0 && mx > 0) {
-        const zy = h - ((0-mn)/rng)*h;
-        ctx.strokeStyle = '#333366'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(0,zy); ctx.lineTo(w,zy); ctx.stroke();
+        const zy = h - ((0 - mn) / rng) * h;
+        ctx.strokeStyle = '#333366'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, zy); ctx.lineTo(w, zy); ctx.stroke();
     }
-
-    // Negative fill
     if (opts.fillNeg) {
-        const zy = h - ((0-mn)/rng)*h;
-        ctx.fillStyle = 'rgba(255,50,50,0.12)';
-        ctx.beginPath();
-        vals.forEach((v, i) => {
-            const x = (i/(vals.length-1))*w, y = h-((v-mn)/rng)*h;
-            i === 0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
-        });
-        ctx.lineTo(w,zy); ctx.lineTo(0,zy); ctx.closePath(); ctx.fill();
+        const zy = h - ((0 - mn) / rng) * h;
+        ctx.fillStyle = 'rgba(255,50,50,0.12)'; ctx.beginPath();
+        vals.forEach((v, i) => { const x = (i / (vals.length - 1)) * w, y = h - ((v - mn) / rng) * h; i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+        ctx.lineTo(w, zy); ctx.lineTo(0, zy); ctx.closePath(); ctx.fill();
     }
-
-    // Line
-    ctx.strokeStyle = opts.color || '#00ccff'; ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    vals.forEach((v, i) => {
-        const x = (i/(vals.length-1))*w, y = Math.max(0, Math.min(h, h-((v-mn)/rng)*h));
-        i === 0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
-    });
+    ctx.strokeStyle = opts.color || '#00ccff'; ctx.lineWidth = 1.5; ctx.beginPath();
+    vals.forEach((v, i) => { const x = (i / (vals.length - 1)) * w, y = Math.max(0, Math.min(h, h - ((v - mn) / rng) * h)); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
     ctx.stroke();
-
-    // Value label
-    ctx.fillStyle = opts.color || '#00ccff';
-    ctx.font = 'bold 20px monospace'; ctx.textAlign = 'right';
-    ctx.fillText(vals[vals.length-1].toFixed(opts.dec ?? 1), w-4, 22);
+    ctx.fillStyle = opts.color || '#00ccff'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'right';
+    ctx.fillText(vals[vals.length - 1].toFixed(opts.dec ?? 1), w - 4, 22);
 }
 
 function drawXRS(data) {
@@ -419,20 +481,96 @@ function drawXRS(data) {
     ctx.clearRect(0, 0, w, h);
     const vals = data.xrs.map(e => Math.log10(e.flux));
     const mn = -8, mx = -3, rng = mx - mn;
-
-    [[-4,'X','#ff4444'],[-5,'M','#ffaa44'],[-6,'C','#4488ff'],[-7,'B','#222244']].forEach(([lv,lb,co]) => {
-        const y = h-((lv-mn)/rng)*h;
-        ctx.strokeStyle = co; ctx.lineWidth = 0.5; ctx.setLineDash([3,3]);
-        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = co; ctx.font = '14px monospace'; ctx.fillText(lb, 4, y-2);
+    [[-4, 'X', '#ff4444'], [-5, 'M', '#ffaa44'], [-6, 'C', '#4488ff'], [-7, 'B', '#222244']].forEach(([lv, lb, co]) => {
+        const y = h - ((lv - mn) / rng) * h;
+        ctx.strokeStyle = co; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = co; ctx.font = '14px monospace'; ctx.fillText(lb, 4, y - 2);
     });
-
     ctx.strokeStyle = '#ff8844'; ctx.lineWidth = 1.5; ctx.beginPath();
-    vals.forEach((v,i) => {
-        const x = (i/(vals.length-1))*w, y = Math.max(0, Math.min(h, h-((v-mn)/rng)*h));
-        i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    vals.forEach((v, i) => { const x = (i / (vals.length - 1)) * w, y = Math.max(0, Math.min(h, h - ((v - mn) / rng) * h)); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    ctx.stroke();
+}
+
+// ===== SEISMOGRAM RENDERER =====
+function drawSeismogram(data) {
+    const c = document.getElementById('seismo-chart');
+    if (!c || !data?.samples?.length) return;
+    const ctx = c.getContext('2d');
+    const w = c.width = c.clientWidth * 2, h = c.height = c.clientHeight * 2;
+    ctx.clearRect(0, 0, w, h);
+
+    const samples = data.samples;
+    const mean = samples.reduce((s, v) => s + v, 0) / samples.length;
+    const centered = samples.map(v => v - mean);
+    const maxAbs = Math.max(...centered.map(Math.abs)) || 1;
+
+    // Background grid
+    ctx.strokeStyle = '#181833'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+
+    // Waveform
+    ctx.strokeStyle = '#44ff88'; ctx.lineWidth = 1.2; ctx.beginPath();
+    centered.forEach((v, i) => {
+        const x = (i / (centered.length - 1)) * w;
+        const y = h / 2 - (v / maxAbs) * (h * 0.45);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     });
     ctx.stroke();
+
+    // Fill under waveform
+    ctx.fillStyle = 'rgba(68,255,136,0.06)'; ctx.beginPath();
+    centered.forEach((v, i) => {
+        const x = (i / (centered.length - 1)) * w;
+        const y = h / 2 - (v / maxAbs) * (h * 0.45);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.lineTo(w, h / 2); ctx.lineTo(0, h / 2); ctx.closePath(); ctx.fill();
+
+    // Labels
+    const stEl = document.getElementById('seismo-station');
+    if (stEl && data.station) stEl.textContent = data.station;
+    const timeEl = document.getElementById('seismo-time');
+    if (timeEl) timeEl.textContent = data.start_time || '--';
+    const ampEl = document.getElementById('seismo-amp');
+    if (ampEl) ampEl.textContent = `pk: ${maxAbs.toFixed(0)} counts`;
+}
+
+// ===== FIELD STRENGTHS UPDATER =====
+function updFieldStrengths(data) {
+    if (!data || data.error) return;
+
+    const fwf = data.fair_weather_ez;
+    if (fwf) {
+        document.getElementById('fv-fwf').textContent = `${fwf.value} V/m`;
+        document.getElementById('fb-fwf').style.width = Math.min(100, (fwf.value / 250) * 100) + '%';
+        const stEz = document.getElementById('st-ez');
+        if (stEz) stEz.textContent = `${fwf.value} V/m`;
+    }
+    const tel = data.telluric_j;
+    if (tel) {
+        document.getElementById('fv-telluric').textContent = `${tel.value} mA/km`;
+        document.getElementById('fb-telluric').style.width = Math.min(100, (tel.value / 100) * 100) + '%';
+        document.getElementById('fb-telluric').style.background = tel.value > 20 ? '#ff4444' : '#ff8844';
+    }
+    const man = data.mansurov_dbdt;
+    if (man) {
+        document.getElementById('fv-mansurov').textContent = `${man.value} nT/hr`;
+        document.getElementById('fb-mansurov').style.width = Math.min(100, (man.value / 50) * 100) + '%';
+    }
+    const sch = data.schumann_f1;
+    if (sch) {
+        document.getElementById('fv-schumann').textContent = `${sch.value} Hz`;
+        // Normalize around 7.83 baseline
+        document.getElementById('fb-schumann').style.width = Math.min(100, (sch.value / 8.5) * 100) + '%';
+    }
+    const gic = data.gic_risk;
+    if (gic) {
+        document.getElementById('fv-gic').textContent = gic.label;
+        document.getElementById('fb-gic').style.width = (gic.score * 100) + '%';
+        document.getElementById('fb-gic').style.background = gic.score > 0.5 ? '#ff4444' : gic.score > 0.2 ? '#ffaa44' : '#44ff44';
+        document.getElementById('fv-gic').style.color = gic.score > 0.5 ? '#ff4444' : gic.score > 0.2 ? '#ffaa44' : '#44ff44';
+    }
 }
 
 // ===== Status updaters =====
@@ -440,22 +578,22 @@ function updKp(d) {
     if (!d?.current) return;
     const k = d.current, el = document.getElementById('kp-metric');
     el.textContent = `Kp ${k.toFixed(0)}`;
-    el.className = 'metric ' + (k<4?'quiet':k<6?'active':'storm');
+    el.className = 'm ' + (k < 4 ? 'q' : k < 6 ? 'a' : 's');
     const s = document.getElementById('st-kp');
-    s.textContent = k.toFixed(0); s.className = 'value ' + (k<4?'ok':k<6?'':'warn');
+    s.textContent = k.toFixed(0); s.className = 'v ' + (k < 4 ? 'g' : k < 6 ? '' : 'w');
 }
 
 function updSW(d) {
     if (!d) return;
     if (d.current_bz != null) {
         const e = document.getElementById('st-bz');
-        e.textContent = `${d.current_bz.toFixed(1)} nT`;
-        e.className = 'value '+(d.current_bz < -10 ? 'warn':'ok');
+        e.textContent = `${d.current_bz.toFixed(1)}`;
+        e.className = 'v ' + (d.current_bz < -10 ? 'w' : 'g');
     }
     if (d.current_speed != null) {
         const e = document.getElementById('st-vsw');
-        e.textContent = `${d.current_speed.toFixed(0)} km/s`;
-        e.className = 'value '+(d.current_speed > 600 ? 'warn':'ok');
+        e.textContent = `${d.current_speed.toFixed(0)}`;
+        e.className = 'v ' + (d.current_speed > 600 ? 'w' : 'g');
     }
     drawChart('sw-chart', d.bz, { color: '#ff6666', fillNeg: true, dec: 1 });
 }
@@ -464,30 +602,26 @@ function updXRS(d) {
     if (!d) return;
     if (d.current_flux) {
         const f = d.current_flux;
-        const cl = f>=1e-4?`X${(f/1e-4).toFixed(1)}`:f>=1e-5?`M${(f/1e-5).toFixed(1)}`:f>=1e-6?`C${(f/1e-6).toFixed(1)}`:'B';
+        const cl = f >= 1e-4 ? `X${(f / 1e-4).toFixed(1)}` : f >= 1e-5 ? `M${(f / 1e-5).toFixed(1)}` : f >= 1e-6 ? `C${(f / 1e-6).toFixed(1)}` : 'B';
         document.getElementById('st-xrs').textContent = cl;
     }
     drawXRS(d);
     const el = document.getElementById('op-state');
     el.textContent = d.state || '?';
-    el.className = 'state '+(d.state==='FALLING'?'falling':d.state==='RISING'?'rising':'stable');
+    el.className = 'state ' + (d.state === 'FALLING' ? 'falling' : d.state === 'RISING' ? 'rising' : 'stable');
 }
 
 function updSun(d) {
     if (!d?.images) return;
     window._si = d.images;
     const img = document.getElementById('sun-image');
-    if (!img.dataset.loaded) {
-        img.src = d.images.eit_195 || d.images.aia_193 || Object.values(d.images)[0];
-        img.dataset.loaded = '1';
-    }
+    if (!img.dataset.loaded) { img.src = d.images.eit_195 || Object.values(d.images)[0]; img.dataset.loaded = '1'; }
 }
 
 function updLunar(d) {
     if (!d) return;
-    document.getElementById('lunar-metric').textContent = `${d.name} (${d.illumination}%)`;
-    document.getElementById('lunar-detail').textContent =
-        `Force: ${d.tidal_force.toFixed(3)} | dF/dt: ${d.tidal_rate.toFixed(3)} | Full: ${d.days_to_full}d`;
+    document.getElementById('lunar-metric').textContent = `${d.name}`;
+    document.getElementById('lunar-detail').textContent = `${d.illumination}% | F:${d.tidal_force.toFixed(2)} | dF:${d.tidal_rate.toFixed(2)}`;
     document.getElementById('st-moon').textContent = `${d.illumination}%`;
 }
 
@@ -495,353 +629,501 @@ function updCR(d) {
     if (!d?.stations) return;
     const ks = Object.keys(d.stations);
     if (!ks.length) return;
-    const avg = ks.reduce((s,k) => s + d.stations[k].deviation_pct, 0) / ks.length;
+    const avg = ks.reduce((s, k) => s + d.stations[k].deviation_pct, 0) / ks.length;
     const el = document.getElementById('cr-metric');
-    el.textContent = `${avg>0?'+':''}${avg.toFixed(1)}%`;
-    el.className = 'metric '+(d.forbush_detected?'storm':'quiet');
-    document.getElementById('cr-detail').textContent =
-        d.forbush_detected ? 'FORBUSH DECREASE' : `${ks.length} stations nominal`;
+    el.textContent = `${avg > 0 ? '+' : ''}${avg.toFixed(1)}%`;
+    el.className = 'm ' + (d.forbush_detected ? 's' : 'q');
+    document.getElementById('cr-detail').textContent = d.forbush_detected ? 'FORBUSH DECREASE' : `${ks.length} stations nominal`;
+    document.getElementById('st-cr').textContent = `${avg > 0 ? '+' : ''}${avg.toFixed(1)}%`;
+    document.getElementById('st-cr').className = 'v ' + (d.forbush_detected ? 'w' : 'g');
 }
 
-// ===== Sun image selector =====
-document.querySelectorAll('#sun-selector button').forEach(b => {
-    b.addEventListener('click', () => {
-        document.querySelectorAll('#sun-selector button').forEach(x => x.classList.remove('active'));
-        b.classList.add('active');
-        if (window._si?.[b.dataset.img])
-            document.getElementById('sun-image').src = window._si[b.dataset.img] + '?t=' + Date.now();
-    });
-});
-
-// ===== MAGNETOMETER STATIONS =====
-function updateMagnetometers(data) {
-    clearLayer('magnetometers');
-    if (!data?.stations) return;
-    const layer = getLayer('magnetometers');
-
-    data.stations.forEach(st => {
-        const pos = ll2v(st.lat, st.lon, R * 1.004);
-        // Diamond marker
-        const geo = new THREE.OctahedronGeometry(0.008, 0);
-        const mat = new THREE.MeshBasicMaterial({
-            color: st.network === 'USGS' ? 0xcc44cc : 0x44cccc,
-            transparent: true, opacity: 0.8,
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.copy(pos);
-        mesh.userData = { type: 'magnetometer', ...st };
-        layer.add(mesh);
-
-        // Small label (only visible up close)
-        // We'll rely on tooltip for now
-    });
-}
-
-// ===== DST UPDATE =====
 function updDst(data) {
     if (!data) return;
-    const el = document.getElementById('dst-metric');
-    const st = document.getElementById('st-dst');
+    const el = document.getElementById('dst-metric'), st = document.getElementById('st-dst');
     if (data.current != null) {
         el.textContent = `${data.current} nT`;
         el.className = 'm ' + (data.current > -30 ? 'q' : data.current > -50 ? 'a' : 's');
-        st.textContent = `${data.current} nT`;
+        st.textContent = `${data.current}`;
         st.className = 'v ' + (data.current > -30 ? 'g' : data.current > -50 ? '' : 'w');
     }
 }
 
-// ===== Layer toggles =====
-document.querySelectorAll('.layer-toggle input').forEach(inp => {
-    inp.addEventListener('change', () => {
-        const g = layerGroups[inp.dataset.layer];
-        if (g) g.visible = inp.checked;
+// Sun image selector
+document.querySelectorAll('#sun-selector button').forEach(b => {
+    b.addEventListener('click', () => {
+        document.querySelectorAll('#sun-selector button').forEach(x => x.classList.remove('on'));
+        b.classList.add('on');
+        if (window._si?.[b.dataset.img])
+            document.getElementById('sun-image').src = window._si[b.dataset.img] + '?t=' + Date.now();
     });
-});
-// Apply initial states
-document.querySelectorAll('.layer-toggle input').forEach(inp => {
-    if (!inp.checked && layerGroups[inp.dataset.layer]) layerGroups[inp.dataset.layer].visible = false;
 });
 
 // ===== Tooltip =====
 const ray = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const tip = document.createElement('div');
-tip.style.cssText = 'position:fixed;background:rgba(5,5,16,0.95);color:#ccc;font:11px monospace;padding:6px 10px;border:1px solid #00ccff;border-radius:4px;pointer-events:none;display:none;z-index:1000;max-width:260px;';
+tip.style.cssText = 'position:fixed;background:rgba(5,5,16,0.95);color:#ccc;font:11px monospace;padding:6px 10px;border:1px solid #00ccff;border-radius:4px;pointer-events:none;display:none;z-index:1000;max-width:280px;';
 document.body.appendChild(tip);
 
 box.addEventListener('mousemove', e => {
     const r = box.getBoundingClientRect();
-    mouse.x = ((e.clientX-r.left)/r.width)*2-1;
-    mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+    mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
     ray.setFromCamera(mouse, camera);
+
+    // Check earthquakes
     const eqLayer = layerGroups['earthquakes'];
-    if (!eqLayer) { tip.style.display='none'; return; }
-    const hits = ray.intersectObjects(eqLayer.children);
-    const hit = hits.find(h => h.object.userData?.mag);
-    if (hit) {
-        const eq = hit.object.userData;
-        const ageH = (Date.now() - eq.time) / 3600000;
-        tip.style.display = 'block';
-        tip.style.left = (e.clientX+14)+'px';
-        tip.style.top = (e.clientY-10)+'px';
-        const zoneColors = { eye:'#44f', inner:'#4f4', wavefront:'#f44', outer:'#ff4', far:'#888', antipodal:'#c8c' };
-        tip.innerHTML = `<b style="color:#ff6644">M${eq.mag.toFixed(1)}</b> ${eq.place}<br>`+
-            `Depth: ${eq.depth?.toFixed(0)||'?'}km | ${ageH.toFixed(1)}h ago<br>`+
-            `${eq.ang_dist}deg | <span style="color:${zoneColors[eq.zone]||'#888'}">${eq.zone}</span>`;
-        box.style.cursor = 'pointer';
-    } else {
-        tip.style.display = 'none';
-        box.style.cursor = 'grab';
+    if (eqLayer) {
+        const hits = ray.intersectObjects(eqLayer.children);
+        const hit = hits.find(h => h.object.userData?.mag);
+        if (hit) {
+            const eq = hit.object.userData, ageH = (Date.now() - eq.time) / 3600000;
+            const zc = { eye: '#44f', inner: '#4f4', wavefront: '#f44', outer: '#ff4', far: '#888', antipodal: '#c8c' };
+            tip.innerHTML = `<b style="color:#ff6644">M${eq.mag.toFixed(1)}</b> ${eq.place}<br>Depth: ${eq.depth?.toFixed(0) || '?'}km | ${ageH.toFixed(1)}h ago<br>${eq.ang_dist}deg | <span style="color:${zc[eq.zone] || '#888'}">${eq.zone}</span>`;
+            tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
+            box.style.cursor = 'pointer';
+            return;
+        }
     }
+
+    // Check plates
+    const plateLayer = layerGroups['plates'];
+    if (plateLayer?.visible) {
+        const hits = ray.intersectObjects(plateLayer.children);
+        const hit = hits.find(h => h.object.userData?.type === 'plate');
+        if (hit) {
+            const p = hit.object.userData;
+            tip.innerHTML = `<b style="color:#4488ff">${p.name}</b><br><span style="color:#889">${p.boundary_type}</span>`;
+            tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
+            box.style.cursor = 'pointer';
+            return;
+        }
+    }
+
+    tip.style.display = 'none';
+    box.style.cursor = 'grab';
 });
 
-// Click to inspect — checks earthquakes and magnetometers
+// Click handler
 box.addEventListener('click', e => {
     const r = box.getBoundingClientRect();
-    mouse.x = ((e.clientX-r.left)/r.width)*2-1;
-    mouse.y = -((e.clientY-r.top)/r.height)*2+1;
+    mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
     ray.setFromCamera(mouse, camera);
 
-    // Check earthquakes first
     const eqLayer = layerGroups['earthquakes'];
     if (eqLayer) {
         const hits = ray.intersectObjects(eqLayer.children);
         const hit = hits.find(h => h.object.userData?.mag);
         if (hit) { showDetail(hit.object.userData); return; }
     }
-
-    // Check magnetometers
     const magLayer = layerGroups['magnetometers'];
     if (magLayer?.visible) {
         const hits = ray.intersectObjects(magLayer.children);
         const hit = hits.find(h => h.object.userData?.type === 'magnetometer');
         if (hit) { showMagDetail(hit.object.userData); return; }
     }
-
-    // Click on empty space closes the panel
     document.getElementById('detail').style.display = 'none';
 });
 
 function showDetail(eq) {
-    const panel = document.getElementById('detail');
-    const content = document.getElementById('detail-content');
-    const ageH = (Date.now() - eq.time) / 3600000;
-    const dt = new Date(eq.time);
-    const zoneColors = { eye:'#44f', inner:'#4f4', wavefront:'#f44', outer:'#ff4', far:'#888', antipodal:'#c8c' };
-    const zoneRatios = { eye:'0.85x', inner:'1.05x', wavefront:'1.36x', outer:'1.10x', far:'1.05x', antipodal:'1.16x' };
-
-    content.innerHTML = `
-        <h3>M${eq.mag.toFixed(1)} ${eq.place || 'Unknown'}</h3>
-        <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T',' ').substring(0,19)} UTC</span></div>
-        <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH*60).toFixed(0)+' min' : ageH.toFixed(1)+' hours'} ago</span></div>
+    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
+    const ageH = (Date.now() - eq.time) / 3600000, dt = new Date(eq.time);
+    const zc = { eye: '#44f', inner: '#4f4', wavefront: '#f44', outer: '#ff4', far: '#888', antipodal: '#c8c' };
+    const zr = { eye: '0.85x', inner: '1.05x', wavefront: '1.36x', outer: '1.10x', far: '1.05x', antipodal: '1.16x' };
+    content.innerHTML = `<h3>M${eq.mag.toFixed(1)} ${eq.place || 'Unknown'}</h3>
+        <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T', ' ').substring(0, 19)} UTC</span></div>
+        <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH * 60).toFixed(0) + ' min' : ageH.toFixed(1) + ' hours'} ago</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${eq.lat.toFixed(3)}N, ${eq.lon.toFixed(3)}E</span></div>
         <div class="row"><span class="k">Depth</span><span class="val">${eq.depth?.toFixed(1) || '?'} km</span></div>
         <div class="row"><span class="k">Subsolar dist</span><span class="val">${eq.ang_dist} deg</span></div>
-        <div class="row"><span class="k">Jelly Ball zone</span>
-            <span class="zone-badge" style="background:${zoneColors[eq.zone]||'#444'};color:#fff">${eq.zone} (${zoneRatios[eq.zone]||'?'})</span>
-        </div>
-        <div style="margin-top:8px; border-top:1px solid #222; padding-top:6px;">
-            <a href="https://earthquake.usgs.gov/earthquakes/eventpage/${eq.id || ''}" target="_blank">USGS Event Page &rarr;</a>
-        </div>
-    `;
+        <div class="row"><span class="k">Jelly Ball zone</span><span class="zone-badge" style="background:${zc[eq.zone] || '#444'};color:#fff">${eq.zone} (${zr[eq.zone] || '?'})</span></div>
+        <div style="margin-top:8px;border-top:1px solid #222;padding-top:6px;"><a href="https://earthquake.usgs.gov/earthquakes/eventpage/${eq.id || ''}" target="_blank">USGS Event Page &rarr;</a></div>`;
     panel.style.display = 'block';
 }
 
 function showMagDetail(st) {
-    const panel = document.getElementById('detail');
-    const content = document.getElementById('detail-content');
-    content.innerHTML = `
-        <h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
+    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
+    content.innerHTML = `<h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
         <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${st.lat.toFixed(2)}N, ${st.lon.toFixed(2)}E</span></div>
-        ${st.live ? `
-        <div style="margin-top:6px; border-top:1px solid #222; padding-top:6px;">
+        ${st.live ? `<div style="margin-top:6px;border-top:1px solid #222;padding-top:6px;">
             <div class="row"><span class="k">B_X</span><span class="val">${st.live.X?.toFixed(1) || '?'} nT</span></div>
             <div class="row"><span class="k">B_Y</span><span class="val">${st.live.Y?.toFixed(1) || '?'} nT</span></div>
             <div class="row"><span class="k">B_Z</span><span class="val">${st.live.Z?.toFixed(1) || '?'} nT</span></div>
-        </div>` : '<div class="d" style="margin-top:6px">No live data (archival only)</div>'}
-        <div style="margin-top:6px;">
-            <a href="https://geomag.usgs.gov/ws/data/?id=${st.code}" target="_blank" style="color:#0cf;font-size:9px">USGS Data Service &rarr;</a>
-        </div>
-    `;
+        </div>` : '<div class="d" style="margin-top:6px">No live data</div>'}`;
     panel.style.display = 'block';
 }
 
-// ===== PALEOMAG DEEP TIME =====
+// ===== PALEOMAG =====
 let palemagData = null;
-
-async function loadPaleomag() {
-    palemagData = await fetchJSON('/paleomag');
-    if (palemagData?.sites) drawPaleomagChart();
-}
-
+async function loadPaleomag() { palemagData = await fetchJSON('/paleomag'); if (palemagData?.sites) drawPaleomagChart(); }
 function drawPaleomagChart() {
     const c = document.getElementById('paleomag-chart');
     if (!c || !palemagData?.sites) return;
     const ctx = c.getContext('2d');
-    const w = c.width = c.clientWidth * 2;
-    const h = c.height = c.clientHeight * 2;
+    const w = c.width = c.clientWidth * 2, h = c.height = c.clientHeight * 2;
     ctx.clearRect(0, 0, w, h);
-
-    const times = palemagData.times; // years BCE (positive = BCE)
-    const tMin = -500, tMax = 2500;
-    const fMin = 30, fMax = 80;
-
-    // Grid
+    const times = palemagData.times, tMin = -500, tMax = 2500, fMin = 30, fMax = 80;
     ctx.strokeStyle = '#181833'; ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) {
-        const y = (i/4) * h;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-    }
-
-    // 1200 BCE marker
+    for (let i = 0; i <= 4; i++) { const y = (i / 4) * h; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
     const x1200 = ((1200 - tMin) / (tMax - tMin)) * w;
     ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(x1200, 0); ctx.lineTo(x1200, h); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#ff4444'; ctx.font = '14px monospace';
-    ctx.fillText('1200', x1200 + 2, 14);
-
-    // Draw sites
+    ctx.beginPath(); ctx.moveTo(x1200, 0); ctx.lineTo(x1200, h); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#ff4444'; ctx.font = '14px monospace'; ctx.fillText('1200', x1200 + 2, 14);
     const drawSite = (name, color, thick) => {
-        const vals = palemagData.sites[name]?.values;
-        if (!vals) return;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = thick ? 2.5 : 1;
-        ctx.globalAlpha = thick ? 1.0 : 0.5;
-        ctx.beginPath();
-        for (let i = 0; i < times.length; i++) {
-            const x = ((times[i] - tMin) / (tMax - tMin)) * w;
-            const y = h - ((vals[i] - fMin) / (fMax - fMin)) * h;
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-        ctx.globalAlpha = 1.0;
+        const vals = palemagData.sites[name]?.values; if (!vals) return;
+        ctx.strokeStyle = color; ctx.lineWidth = thick ? 2.5 : 1; ctx.globalAlpha = thick ? 1.0 : 0.5; ctx.beginPath();
+        for (let i = 0; i < times.length; i++) { const x = ((times[i] - tMin) / (tMax - tMin)) * w, y = h - ((vals[i] - fMin) / (fMax - fMin)) * h; i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        ctx.stroke(); ctx.globalAlpha = 1.0;
     };
-
-    drawSite('Greece', '#44aaff', false);
-    drawSite('Anatolia', '#ffaa44', false);
-    drawSite('Egypt', '#44ff44', false);
-    drawSite('Levant', '#ff4444', true);
-    drawSite('China', '#ffff44', true);
-
-    // Labels
-    ctx.font = '12px monospace';
-    ctx.fillStyle = '#ff4444'; ctx.fillText('Levant', 4, h - 8);
-    ctx.fillStyle = '#ffff44'; ctx.fillText('China', 70, h - 8);
+    drawSite('Greece', '#44aaff', false); drawSite('Anatolia', '#ffaa44', false); drawSite('Egypt', '#44ff44', false);
+    drawSite('Levant', '#ff4444', true); drawSite('China', '#ffff44', true);
+    ctx.font = '12px monospace'; ctx.fillStyle = '#ff4444'; ctx.fillText('Levant', 4, h - 8); ctx.fillStyle = '#ffff44'; ctx.fillText('China', 70, h - 8);
 }
-
-document.getElementById('paleomag-toggle')?.addEventListener('change', (e) => {
+document.getElementById('paleomag-toggle')?.addEventListener('change', e => {
     const panel = document.getElementById('paleomag-panel');
     if (panel) panel.style.display = e.target.checked ? 'block' : 'none';
     if (e.target.checked && !palemagData) loadPaleomag();
 });
 
-// ===== TIME SLIDER (historical replay) =====
+// ===== TIME SLIDER =====
 const timeSlider = document.getElementById('time-slider');
 const timeVal = document.getElementById('time-val');
 const timeLive = document.getElementById('time-live');
-let isLive = true;
-let historyHoursBack = 0;
-
+let isLive = true, historyHoursBack = 0;
 if (timeSlider) {
-    // Show the time control bar
     document.getElementById('time-control').classList.add('visible');
-
     timeSlider.addEventListener('input', () => {
         historyHoursBack = parseInt(timeSlider.value);
-        if (historyHoursBack === 0) {
-            isLive = true;
-            timeVal.textContent = 'LIVE';
-            timeLive.classList.add('on');
-        } else {
-            isLive = false;
-            const d = new Date(Date.now() - historyHoursBack * 3600000);
-            timeVal.textContent = `-${historyHoursBack}h`;
-            timeLive.classList.remove('on');
-        }
+        isLive = historyHoursBack === 0;
+        timeVal.textContent = isLive ? 'LIVE' : `-${historyHoursBack}h`;
+        timeLive.classList.toggle('on', isLive);
     });
-
-    timeLive.addEventListener('click', () => {
-        timeSlider.value = 0;
-        historyHoursBack = 0;
-        isLive = true;
-        timeVal.textContent = 'LIVE';
-        timeLive.classList.add('on');
-    });
+    timeLive.addEventListener('click', () => { timeSlider.value = 0; historyHoursBack = 0; isLive = true; timeVal.textContent = 'LIVE'; timeLive.classList.add('on'); });
 }
 
-// ===== Clock =====
+// Clock
 setInterval(() => {
     const now = isLive ? new Date() : new Date(Date.now() - historyHoursBack * 3600000);
-    document.getElementById('clock').textContent =
-        now.toISOString().replace('T',' ').substring(0,19) + ' UTC' + (isLive ? '' : ` (-${historyHoursBack}h)`);
+    document.getElementById('clock').textContent = now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC' + (isLive ? '' : ` (-${historyHoursBack}h)`);
 }, 1000);
 
-// ===== Poll =====
+// ===== Layer toggles =====
+document.querySelectorAll('[data-layer]').forEach(inp => {
+    inp.addEventListener('change', () => { const g = layerGroups[inp.dataset.layer]; if (g) g.visible = inp.checked; });
+});
+setTimeout(() => {
+    document.querySelectorAll('[data-layer]').forEach(inp => {
+        if (!inp.checked && layerGroups[inp.dataset.layer]) layerGroups[inp.dataset.layer].visible = false;
+    });
+}, 200);
+
+// ===== MAIN POLL =====
 async function poll() {
     const results = await Promise.allSettled([
-        fetchJSON('/earthquakes'),    // 0
-        fetchJSON('/subsolar'),       // 1
-        fetchJSON('/kp'),             // 2
-        fetchJSON('/solar_wind'),     // 3
-        fetchJSON('/xrs'),            // 4
-        fetchJSON('/sun'),            // 5
-        fetchJSON('/lunar'),          // 6
-        fetchJSON('/cosmic_rays'),    // 7
-        fetchJSON('/dst'),            // 8
-        fetchJSON('/magnetometers'),  // 9
+        fetchJSON('/earthquakes'),     // 0
+        fetchJSON('/subsolar'),        // 1
+        fetchJSON('/kp'),              // 2
+        fetchJSON('/solar_wind'),      // 3
+        fetchJSON('/xrs'),             // 4
+        fetchJSON('/sun'),             // 5
+        fetchJSON('/lunar'),           // 6
+        fetchJSON('/cosmic_rays'),     // 7
+        fetchJSON('/dst'),             // 8
+        fetchJSON('/magnetometers'),   // 9
+        fetchJSON('/field_strengths'), // 10
+        fetchJSON('/seismic/waveform'),// 11
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
     if (v(1)) { updateSubsolar(v(1)); updateJellyBall(v(1)); updateTerminator(v(1)); }
     if (v(2)) updKp(v(2));
-    if (v(3)) updSW(v(3));
+    if (v(3)) { updSW(v(3)); if (v(3).current_speed) swSpeed = v(3).current_speed; if (v(3).current_bz != null) updateMagnetosphereCompression(v(3).current_bz); }
     if (v(4)) updXRS(v(4));
     if (v(5)) updSun(v(5));
     if (v(6)) updLunar(v(6));
     if (v(7)) updCR(v(7));
     if (v(8)) updDst(v(8));
     if (v(9)) updateMagnetometers(v(9));
-    // Cosmic ray in status bar
-    if (v(7)?.stations) {
-        const ks = Object.keys(v(7).stations);
-        if (ks.length) {
-            const avg = ks.reduce((s,k) => s + v(7).stations[k].deviation_pct, 0) / ks.length;
-            document.getElementById('st-cr').textContent = `${avg>0?'+':''}${avg.toFixed(1)}%`;
-            document.getElementById('st-cr').className = 'v ' + (v(7).forbush_detected ? 'w' : 'g');
-        }
-    }
+    if (v(10)) updFieldStrengths(v(10));
+    if (v(11)) drawSeismogram(v(11));
 }
 poll();
 setInterval(poll, POLL);
 
-// ===== Animate =====
+// ============================================================
+// SOLAR MONITOR INTEGRATION
+// ============================================================
+
+const DET_NAMES = ['zscore', 'cusum', 'hardness', 'rate', 'multichannel', 'proton', 'criticality'];
+function scoreColor(score) { return score < 0.3 ? '#44ff44' : score < 0.5 ? '#aaff44' : score < 0.7 ? '#ffaa44' : '#ff4444'; }
+
+function updDetectors(data) {
+    if (!data || data.error) return;
+    const detectors = data.detectors || data;
+    if (Array.isArray(detectors)) {
+        detectors.forEach(d => {
+            const name = d.name?.toLowerCase()?.replace(/[_\s-]/g, '') || '';
+            const matchName = DET_NAMES.find(n => name.includes(n)) || name;
+            const bar = document.getElementById(`det-${matchName}`), score = document.getElementById(`ds-${matchName}`);
+            if (bar && d.score != null) { bar.style.width = Math.min(100, d.score * 100) + '%'; bar.style.background = scoreColor(d.score); }
+            if (score && d.score != null) score.textContent = d.score.toFixed(2);
+        });
+    }
+    const fused = data.fused_score ?? data.fused ?? null;
+    if (fused != null) {
+        const fill = document.getElementById('fused-fill'), label = document.getElementById('fused-label');
+        if (fill) { fill.style.width = Math.min(100, fused * 100) + '%'; fill.style.background = scoreColor(fused); }
+        if (label) label.textContent = `FUSED: ${fused.toFixed(3)}`;
+        const stF = document.getElementById('st-fused');
+        if (stF) { stF.textContent = fused.toFixed(2); stF.className = 'v ' + (fused < 0.3 ? 'g' : fused < 0.7 ? '' : 'w'); }
+    }
+    const agree = data.agreement ?? data.agreement_count ?? null;
+    if (agree != null) { const el = document.getElementById('det-agreement'); if (el) el.textContent = agree; }
+}
+
+function updEscalation(data) {
+    if (!data || data.error) return;
+    const level = (data.level || data.state || 'quiet').toLowerCase();
+    const el = document.getElementById('esc-state');
+    if (el) { el.textContent = level.toUpperCase(); el.className = 'esc-badge esc-' + level; }
+    const stE = document.getElementById('st-esc');
+    if (stE) { stE.textContent = level.toUpperCase(); stE.className = 'v ' + (level === 'quiet' ? 'g' : level === 'flare' ? 'w' : ''); }
+    const detail = document.getElementById('esc-detail');
+    if (detail) {
+        const spikes = data.hardness_spike_count ?? data.spikes ?? '--';
+        const peak = data.peak_fused ?? data.peak ?? '--';
+        detail.textContent = `Spikes: ${spikes} | Peak: ${typeof peak === 'number' ? peak.toFixed(2) : peak}`;
+    }
+}
+
+const PW_NAMES = ['forbush', 'heep', 'ssc', 'mansurov', 'lunar'];
+const PW_COLORS = { forbush: '#6644ff', heep: '#44ffaa', ssc: '#ff44aa', mansurov: '#ffff44', lunar: '#888' };
+
+function updPathways(data) {
+    if (!data || data.error) return;
+    const pathways = data.pathways || data;
+    let totalStress = 0;
+    const pwList = Array.isArray(pathways) ? pathways : Object.values(pathways);
+    pwList.forEach(pw => {
+        const name = (pw.name || pw.pathway || '').toLowerCase().replace(/[_\s-]/g, '');
+        const matchName = PW_NAMES.find(n => name.includes(n));
+        if (!matchName) return;
+        const score = pw.score ?? pw.value ?? 0;
+        const dir = pw.direction || pw.effect || (score >= 0 ? '+' : '-');
+        const bar = document.getElementById(`pw-${matchName}`), dirEl = document.getElementById(`pwd-${matchName}`), scoreEl = document.getElementById(`pws-${matchName}`);
+        if (bar) { bar.style.width = Math.min(100, Math.abs(score) * 100) + '%'; bar.style.background = PW_COLORS[matchName] || '#888'; }
+        if (dirEl) { dirEl.textContent = dir === 'suppression' || dir === '-' ? '-' : '+'; dirEl.style.color = dir === 'suppression' || dir === '-' ? '#f44' : '#4f4'; }
+        if (scoreEl) scoreEl.textContent = Math.abs(score).toFixed(2);
+        totalStress += score;
+    });
+    const stressIdx = data.total_stress ?? data.stressor_index ?? totalStress;
+    const stressEl = document.getElementById('stress-val');
+    if (stressEl) { stressEl.textContent = (stressIdx >= 0 ? '+' : '') + stressIdx.toFixed(2); stressEl.style.color = stressIdx > 0.3 ? '#f44' : stressIdx > 0 ? '#ff4' : '#4f4'; }
+}
+
+// SSE Streams
+let solarConnected = false;
+function connectSSE() {
+    try {
+        const sse = new EventSource(`${SOLAR_API}/metrics`);
+        sse.onopen = () => {
+            solarConnected = true;
+            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live';
+            const st = document.getElementById('solar-status'); if (st) st.textContent = '(LIVE)';
+        };
+        sse.onmessage = e => {
+            try {
+                const d = JSON.parse(e.data);
+                if (d.fused_score != null || d.detectors) updDetectors(d);
+                if (d.escalation || d.level) updEscalation(d.escalation || d);
+                if (d.pathways || d.stressor) updPathways(d.pathways || d.stressor || d);
+                if (d.feeds?.imf_bz != null) updateMagnetosphereCompression(d.feeds.imf_bz);
+            } catch (_) { }
+        };
+        sse.onerror = () => {
+            solarConnected = false;
+            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot dead';
+            const st = document.getElementById('solar-status'); if (st) st.textContent = '(polling)';
+        };
+    } catch (_) { }
+    try {
+        const alerts = new EventSource(`${SOLAR_API}/alerts`);
+        alerts.onmessage = e => {
+            try {
+                const a = JSON.parse(e.data);
+                const banner = document.getElementById('alert-banner');
+                if (!banner) return;
+                const type = a.type || a.kind || '', msg = a.message || a.msg || JSON.stringify(a);
+                banner.textContent = `${type.toUpperCase()}: ${msg}`;
+                banner.style.display = 'block';
+                banner.style.background = type.includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)';
+                setTimeout(() => { banner.style.display = 'none'; }, 15000);
+            } catch (_) { }
+        };
+    } catch (_) { }
+}
+connectSSE();
+
+// Solar monitor polling fallback
+async function pollSolar() {
+    try {
+        const [detR, escR, pwR] = await Promise.allSettled([
+            fetch(`${SOLAR_API}/detectors`).then(r => r.json()),
+            fetch(`${SOLAR_API}/escalation`).then(r => r.json()),
+            fetch(`${SOLAR_API}/pathways`).then(r => r.json()),
+        ]);
+        if (detR.value && !detR.value.error) updDetectors(detR.value);
+        if (escR.value && !escR.value.error) updEscalation(escR.value);
+        if (pwR.value && !pwR.value.error) updPathways(pwR.value);
+        if (!detR.value?.error) {
+            const dot = document.getElementById('solar-conn');
+            if (dot && !solarConnected) dot.className = 'conn-dot live';
+            const st = document.getElementById('solar-status');
+            if (st && !solarConnected) st.textContent = '(polling)';
+        }
+    } catch (_) { }
+}
+pollSolar();
+setInterval(pollSolar, POLL);
+
+// ============================================================
+// THREE.JS PHYSICS VISUALIZATIONS
+// ============================================================
+
+// Magnetosphere
+let magnetoCompression = 1.0;
+function buildMagnetosphere() {
+    clearLayer('magnetosphere');
+    const layer = getLayer('magnetosphere');
+    for (let i = 0; i < 12; i++) {
+        const phi = (i / 12) * Math.PI * 2, pts = [];
+        for (let j = 0; j <= 80; j++) {
+            const t = (j / 80) * Math.PI;
+            const Lshell = 2.5 + (i % 3) * 0.6, r = Lshell * Math.sin(t) * Math.sin(t);
+            let x = r * Math.sin(t) * Math.cos(phi), y = r * Math.cos(t), z = r * Math.sin(t) * Math.sin(phi);
+            if (x > 0) x *= magnetoCompression;
+            if (x < 0) x *= (1 + (1 - magnetoCompression) * 0.5);
+            pts.push(new THREE.Vector3(x * 0.4, y * 0.4, z * 0.4));
+        }
+        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: new THREE.Color().setHSL(0.55 + (i % 3) * 0.05, 0.6, 0.5), transparent: true, opacity: 0.2 + (i % 3) * 0.05 })));
+    }
+    // Bow shock
+    const bowPts = [];
+    for (let i = 0; i <= 60; i++) {
+        const a = (i / 60) * Math.PI * 2, rBow = 1.3 * magnetoCompression + 0.2;
+        bowPts.push(new THREE.Vector3(rBow * 0.5 + 0.3, rBow * Math.sin(a) * 0.8, rBow * Math.cos(a) * 0.8));
+    }
+    layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(bowPts),
+        new THREE.LineBasicMaterial({ color: 0x44aaff, transparent: true, opacity: 0.12 })));
+}
+function updateMagnetosphereCompression(bz) {
+    const c = bz < 0 ? Math.max(0.4, 1 + bz / 30) : 1.0;
+    if (Math.abs(c - magnetoCompression) > 0.02) { magnetoCompression = c; buildMagnetosphere(); }
+}
+buildMagnetosphere();
+
+// Solar Wind Particles
+const SW_COUNT = 600;
+let swParticles = null, swPositions = null, swVelocities = null, swSpeed = 400;
+function buildSolarWind() {
+    clearLayer('solar-wind');
+    const layer = getLayer('solar-wind');
+    const geo = new THREE.BufferGeometry();
+    swPositions = new Float32Array(SW_COUNT * 3);
+    swVelocities = new Float32Array(SW_COUNT * 3);
+    const colors = new Float32Array(SW_COUNT * 3);
+    for (let i = 0; i < SW_COUNT; i++) {
+        swPositions[i * 3] = 3 + Math.random() * 4;
+        swPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.8;
+        swPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.8;
+        swVelocities[i * 3] = -(0.008 + Math.random() * 0.006);
+        swVelocities[i * 3 + 1] = (Math.random() - 0.5) * 0.001;
+        swVelocities[i * 3 + 2] = (Math.random() - 0.5) * 0.001;
+        colors[i * 3] = 0.9 + Math.random() * 0.1;
+        colors[i * 3 + 1] = 0.8 + Math.random() * 0.2;
+        colors[i * 3 + 2] = 0.3 + Math.random() * 0.3;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(swPositions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    swParticles = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.012, vertexColors: true, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
+    layer.add(swParticles);
+}
+function animateSolarWind() {
+    if (!swPositions) return;
+    const sf = swSpeed / 400;
+    for (let i = 0; i < SW_COUNT; i++) {
+        const ix = i * 3;
+        swPositions[ix] += swVelocities[ix] * sf; swPositions[ix + 1] += swVelocities[ix + 1]; swPositions[ix + 2] += swVelocities[ix + 2];
+        const dist = Math.sqrt(swPositions[ix] ** 2 + swPositions[ix + 1] ** 2 + swPositions[ix + 2] ** 2);
+        if (dist < 1.2 * magnetoCompression + 0.3) {
+            swVelocities[ix] += (swPositions[ix] / dist) * 0.003;
+            swVelocities[ix + 1] += (swPositions[ix + 1] / dist) * 0.003;
+            swVelocities[ix + 2] += (swPositions[ix + 2] / dist) * 0.003;
+        }
+        if (swPositions[ix] < -3 || dist > 8) {
+            swPositions[ix] = 3 + Math.random() * 4; swPositions[ix + 1] = (Math.random() - 0.5) * 0.8; swPositions[ix + 2] = (Math.random() - 0.5) * 0.8;
+            swVelocities[ix] = -(0.008 + Math.random() * 0.006); swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001; swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
+        }
+    }
+    if (swParticles) swParticles.geometry.attributes.position.needsUpdate = true;
+}
+buildSolarWind();
+
+// Comet
+const cometGroup = getLayer('comet');
+let cometMesh = null, cometTail = null, cometAngle = 0;
+function buildComet() {
+    clearLayer('comet'); const layer = getLayer('comet');
+    cometMesh = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 12), new THREE.MeshBasicMaterial({ color: 0x88ffff }));
+    layer.add(cometMesh);
+    cometMesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), new THREE.MeshBasicMaterial({ color: 0x44ddff, transparent: true, opacity: 0.2, depthWrite: false })));
+    const tailPts = []; for (let i = 0; i < 60; i++) tailPts.push(new THREE.Vector3(0, 0, 0));
+    cometTail = new THREE.Line(new THREE.BufferGeometry().setFromPoints(tailPts), new THREE.LineBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.4 }));
+    layer.add(cometTail);
+    const ionPts = []; for (let i = 0; i < 40; i++) ionPts.push(new THREE.Vector3(0, 0, 0));
+    const ionTail = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ionPts), new THREE.LineBasicMaterial({ color: 0x4466ff, transparent: true, opacity: 0.25 }));
+    ionTail.name = 'ion-tail'; layer.add(ionTail);
+}
+function animateComet() {
+    if (!cometMesh) return;
+    cometAngle += 0.0008;
+    const orbitR = 3.5 - 1.0 * Math.sin(cometAngle * 0.5);
+    cometMesh.position.set(orbitR * Math.cos(cometAngle) + 4, 0.5 * Math.sin(cometAngle * 0.7), orbitR * Math.sin(cometAngle) * 0.3);
+    const sunDir = new THREE.Vector3(4, 0, 0).sub(cometMesh.position).normalize();
+    const tp = cometTail.geometry.attributes.position;
+    for (let i = 0; i < 60; i++) {
+        const t = i / 60, len = t * 1.5;
+        tp.setXYZ(i, cometMesh.position.x - sunDir.x * len + Math.sin(t * 2) * t * 0.15, cometMesh.position.y - sunDir.y * len + Math.cos(t * 3) * t * 0.08, cometMesh.position.z - sunDir.z * len + t * 0.1);
+    }
+    tp.needsUpdate = true;
+    const ion = cometGroup.getObjectByName('ion-tail');
+    if (ion) { const ip = ion.geometry.attributes.position; for (let i = 0; i < 40; i++) { const t = i / 40, len = t * 2; ip.setXYZ(i, cometMesh.position.x - sunDir.x * len, cometMesh.position.y - sunDir.y * len, cometMesh.position.z - sunDir.z * len); } ip.needsUpdate = true; }
+}
+buildComet();
+
+// ===== ANIMATE =====
 let frame = 0;
 function animate() {
     requestAnimationFrame(animate);
     ctrl.update();
     frame++;
-
     const rot = 0.00015;
-    earth.rotation.y += rot;
-    wireframe.rotation.y += rot;
-    for (const name of rotatingLayers) {
-        if (layerGroups[name]) layerGroups[name].rotation.y += rot;
-    }
-
-    // Animate wave propagation every 30 frames
+    earth.rotation.y += rot; wireframe.rotation.y += rot;
+    for (const name of rotatingLayers) { if (layerGroups[name]) layerGroups[name].rotation.y += rot; }
     if (frame % 30 === 0 && eqWaves.length > 0) animateWaves();
-
-    // Pulse subsolar
     const ss = layerGroups['subsolar']?.getObjectByName('subsolar-pulse');
     if (ss) ss.scale.setScalar(1 + 0.2 * Math.sin(frame * 0.04));
-
+    animateSolarWind();
+    animateComet();
     renderer.render(scene, camera);
 }
 animate();
 
-// ===== Resize =====
+// Resize
 window.addEventListener('resize', () => {
     camera.aspect = box.clientWidth / box.clientHeight;
     camera.updateProjectionMatrix();

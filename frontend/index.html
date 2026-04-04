@@ -10,55 +10,128 @@
         #canvas-container { position: absolute; top: 0; left: 0; width: 72vw; height: 100vh; }
         #sidebar { position: absolute; top: 0; right: 0; width: 28vw; height: 100vh;
             background: rgba(8,8,20,0.97); border-left: 1px solid #1a1a33;
-            overflow-y: auto; padding: 8px; font-size: 11px; }
+            overflow-y: auto; padding: 8px 8px 40px; font-size: 11px; }
         #header { position: absolute; top: 8px; left: 12px; z-index: 100; }
         #header h1 { color: #00ccff; font-size: 16px; letter-spacing: 2px; }
         #header .sub { color: #556; font-size: 10px; }
         #status-bar { position: absolute; bottom: 0; left: 0; width: 72vw; height: 32px;
             background: rgba(8,8,20,0.92); border-top: 1px solid #1a1a33;
             display: flex; align-items: center; padding: 0 12px; font-size: 10px; z-index: 100; }
-        .si { margin-right: 16px; white-space: nowrap; }
+        .si { margin-right: 14px; white-space: nowrap; }
         .si .l { color: #445; }
         .si .v { color: #0cf; font-weight: bold; }
         .si .v.w { color: #f44; }
         .si .v.g { color: #4f4; }
 
-        /* Layers */
-        .layer-section { margin-bottom: 10px; }
-        .layer-section h3 { color: #0cf; font-size: 10px; margin-bottom: 5px;
-            border-bottom: 1px solid #1a1a33; padding-bottom: 3px; letter-spacing: 1px; }
-        .lt { display: flex; align-items: center; margin-bottom: 3px; cursor: pointer; font-size: 10px; }
+        /* Section headers */
+        .sec { margin-bottom: 8px; padding-top: 4px; border-top: 1px solid #111122; }
+        .sec:first-child { border-top: none; padding-top: 0; }
+        .sec h2 { color: #0cf; font-size: 11px; letter-spacing: 2px; padding: 2px 0 4px;
+            border-bottom: 1px solid #1a1a33; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+        .sec h2 .tag { font-size: 8px; color: #556; font-weight: normal; letter-spacing: 0; }
+
+        /* Layer toggles */
+        .lt { display: flex; align-items: center; margin-bottom: 2px; cursor: pointer; font-size: 10px; }
         .lt input { margin-right: 5px; width: 12px; height: 12px; }
         .dot { width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; display: inline-block; }
+        .layer-group { margin-bottom: 6px; padding-left: 2px; }
 
         /* Panels */
-        .p { background: #0b0b22; border: 1px solid #1a1a33; border-radius: 3px; padding: 6px; margin-bottom: 8px; }
+        .p { background: #0b0b22; border: 1px solid #1a1a33; border-radius: 3px; padding: 6px; margin-bottom: 6px; }
         .p h4 { color: #0cf; font-size: 10px; margin-bottom: 4px; letter-spacing: 0.5px; }
         .p canvas { width: 100%; height: 70px; }
         .p .m { font-size: 18px; font-weight: bold; text-align: center; }
         .p .m.q { color: #4f4; } .p .m.a { color: #ff4; } .p .m.s { color: #f44; }
         .p .d { font-size: 8px; color: #445; text-align: center; }
 
+        /* Compact metric pair */
+        .metric-pair { display: flex; gap: 4px; margin-bottom: 6px; }
+        .metric-pair .p { flex: 1; text-align: center; margin-bottom: 0; }
+
         /* Order parameter */
-        .state { font-size: 14px; font-weight: bold; padding: 3px 10px; border-radius: 3px;
-            display: inline-block; text-align: center; }
+        .state { font-size: 12px; font-weight: bold; padding: 2px 8px; border-radius: 3px; display: inline-block; }
         .state.falling { color: #f44; border: 1px solid #f44; background: rgba(255,60,60,0.08); }
         .state.rising { color: #4f4; border: 1px solid #4f4; background: rgba(60,255,60,0.08); }
         .state.stable { color: #888; border: 1px solid #333; }
+
+        /* Sun image */
+        #sun-panel img { width: 100%; border-radius: 3px; margin-bottom: 3px; }
+        .sun-btns { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 4px; }
+        .sun-btns button { background: #141430; border: 1px solid #2a2a44; color: #aaa;
+            font-size: 8px; padding: 1px 5px; cursor: pointer; border-radius: 2px; }
+        .sun-btns button.on { background: #0cf; color: #050510; }
+
+        /* Escalation badge */
+        .esc-badge { display: inline-block; padding: 2px 10px; border-radius: 3px; font-size: 11px;
+            font-weight: bold; letter-spacing: 1px; }
+        .esc-quiet { background: rgba(40,180,40,0.15); color: #4f4; border: 1px solid #4f4; }
+        .esc-elevated { background: rgba(200,200,40,0.15); color: #ff4; border: 1px solid #ff4; }
+        .esc-active { background: rgba(255,140,40,0.15); color: #f84; border: 1px solid #f84; }
+        .esc-flare { background: rgba(255,50,50,0.2); color: #f44; border: 1px solid #f44; animation: flare-pulse 1s infinite; }
+        @keyframes flare-pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+        /* Detector bars */
+        .det-row { display: flex; align-items: center; margin-bottom: 2px; gap: 4px; }
+        .det-label { width: 62px; font-size: 8px; color: #778; text-align: right; white-space: nowrap; }
+        .det-bar-bg { flex: 1; height: 9px; background: #111128; border-radius: 2px; overflow: hidden; }
+        .det-bar { height: 100%; border-radius: 2px; transition: width 0.6s ease, background 0.6s ease; min-width: 2px; }
+        .det-score { width: 30px; font-size: 8px; color: #889; text-align: right; font-variant-numeric: tabular-nums; }
+        .fused-bar { height: 14px; background: #111128; border-radius: 3px; overflow: hidden; margin: 4px 0; position: relative; }
+        .fused-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease, background 0.6s ease; min-width: 2px; }
+        .fused-label { position: absolute; right: 4px; top: 1px; font-size: 9px; color: #fff; font-weight: bold; z-index: 1; }
+
+        /* Pathway bars */
+        .pw-row { display: flex; align-items: center; margin-bottom: 2px; gap: 4px; }
+        .pw-name { width: 62px; font-size: 8px; color: #778; text-align: right; white-space: nowrap; }
+        .pw-bar-bg { flex: 1; height: 8px; background: #111128; border-radius: 2px; overflow: hidden; }
+        .pw-bar { height: 100%; border-radius: 2px; transition: width 0.6s ease; min-width: 2px; }
+        .pw-dir { width: 12px; font-size: 10px; text-align: center; }
+        .pw-score { width: 26px; font-size: 8px; color: #889; text-align: right; font-variant-numeric: tabular-nums; }
+        .stress-gauge { text-align: center; margin: 4px 0 0; }
+        .stress-val { font-size: 20px; font-weight: bold; }
+        .stress-label { font-size: 8px; color: #556; }
+
+        /* Field strength rows */
+        .field-row { display: flex; align-items: center; padding: 3px 4px; margin-bottom: 1px; border-radius: 2px; gap: 4px; }
+        .field-row:nth-child(odd) { background: rgba(20,20,50,0.4); }
+        .field-name { flex: 0 0 90px; font-size: 9px; color: #778; white-space: nowrap; }
+        .field-val { flex: 0 0 70px; font-size: 10px; font-weight: bold; text-align: right; font-variant-numeric: tabular-nums; }
+        .field-bar { flex: 1; height: 6px; background: #111128; border-radius: 2px; overflow: hidden; }
+        .field-bar-fill { height: 100%; border-radius: 2px; transition: width 0.8s ease; min-width: 2px; }
+
+        /* Plate boundary legend */
+        .plate-legend { display: flex; flex-wrap: wrap; gap: 2px 6px; margin-top: 3px; }
+        .plate-tag { font-size: 7px; color: #556; display: flex; align-items: center; gap: 2px; }
+        .plate-tag .swatch { width: 8px; height: 3px; border-radius: 1px; }
+
+        /* Seismogram */
+        #seismo-chart { width: 100%; height: 60px; }
+        .seismo-meta { display: flex; justify-content: space-between; font-size: 8px; color: #556; }
+
+        /* Alert banner */
+        #alert-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 500;
+            background: rgba(255,50,50,0.95); color: #fff; text-align: center;
+            padding: 6px; font-size: 12px; font-weight: bold; display: none;
+            animation: alert-slide 0.3s ease; }
+        @keyframes alert-slide { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+
+        /* Connection dot */
+        .conn-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+        .conn-dot.live { background: #4f4; animation: conn-pulse 2s infinite; }
+        .conn-dot.dead { background: #f44; }
+        @keyframes conn-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
         /* Detail popup */
         #detail { position: absolute; bottom: 40px; left: 12px; width: 350px;
             background: rgba(8,8,20,0.97); border: 1px solid #0cf; border-radius: 4px;
             padding: 10px; z-index: 200; display: none; font-size: 11px; }
-        #detail .close { position: absolute; top: 4px; right: 8px; cursor: pointer;
-            color: #666; font-size: 14px; }
+        #detail .close { position: absolute; top: 4px; right: 8px; cursor: pointer; color: #666; font-size: 14px; }
         #detail .close:hover { color: #fff; }
         #detail h3 { color: #ff6644; font-size: 14px; margin-bottom: 6px; }
         #detail .row { display: flex; justify-content: space-between; margin-bottom: 3px; }
         #detail .row .k { color: #556; }
         #detail .row .val { color: #ccc; }
-        #detail .zone-badge { display: inline-block; padding: 1px 8px; border-radius: 2px;
-            font-size: 10px; font-weight: bold; }
+        #detail .zone-badge { display: inline-block; padding: 1px 8px; border-radius: 2px; font-size: 10px; font-weight: bold; }
         #detail a { color: #0cf; text-decoration: none; font-size: 9px; }
 
         /* Time slider */
@@ -73,128 +146,220 @@
             font-size: 9px; padding: 2px 8px; cursor: pointer; border-radius: 2px; }
         #time-control button.on { background: #0cf; color: #050510; }
 
-        /* Paleomag chart in sidebar */
-        #paleomag-chart { width: 100%; height: 90px; }
+        /* GeoJSON/KML drop zone */
+        #drop-zone { border: 1px dashed #2a2a44; border-radius: 3px; padding: 4px; text-align: center;
+            font-size: 8px; color: #334; cursor: pointer; margin-top: 4px; transition: border-color 0.2s; }
+        #drop-zone.over { border-color: #0cf; color: #0cf; }
 
-        /* Sun */
-        #sun-panel img { width: 100%; border-radius: 3px; margin-bottom: 3px; }
-        .sun-btns { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 4px; }
-        .sun-btns button { background: #141430; border: 1px solid #2a2a44; color: #aaa;
-            font-size: 8px; padding: 1px 5px; cursor: pointer; border-radius: 2px; }
-        .sun-btns button.on { background: #0cf; color: #050510; }
+        /* Paleomag */
+        #paleomag-chart { width: 100%; height: 80px; }
+
+        /* Scrollbar */
+        #sidebar::-webkit-scrollbar { width: 4px; }
+        #sidebar::-webkit-scrollbar-track { background: transparent; }
+        #sidebar::-webkit-scrollbar-thumb { background: #1a1a33; border-radius: 2px; }
     </style>
 </head>
 <body>
     <div id="canvas-container"></div>
     <div id="header"><h1>GLOBAL RESONANCE</h1><div class="sub" id="clock"></div></div>
+    <div id="alert-banner"></div>
 
     <div id="status-bar">
+        <div class="si"><span class="conn-dot dead" id="solar-conn"></span><span class="l">FUSED </span><span class="v" id="st-fused">--</span></div>
+        <div class="si"><span class="l">ESC </span><span class="v" id="st-esc">--</span></div>
         <div class="si"><span class="l">Kp </span><span class="v" id="st-kp">--</span></div>
         <div class="si"><span class="l">Bz </span><span class="v" id="st-bz">--</span></div>
         <div class="si"><span class="l">V </span><span class="v" id="st-vsw">--</span></div>
         <div class="si"><span class="l">Dst </span><span class="v" id="st-dst">--</span></div>
         <div class="si"><span class="l">XRS </span><span class="v" id="st-xrs">--</span></div>
+        <div class="si"><span class="l">Ez </span><span class="v" id="st-ez">--</span></div>
         <div class="si"><span class="l">Moon </span><span class="v" id="st-moon">--</span></div>
         <div class="si"><span class="l">EQs </span><span class="v" id="st-eqs">--</span></div>
         <div class="si"><span class="l">CR </span><span class="v" id="st-cr">--</span></div>
     </div>
 
-    <!-- Detail popup for clicked events -->
     <div id="detail">
         <span class="close" onclick="document.getElementById('detail').style.display='none'">&times;</span>
         <div id="detail-content"></div>
     </div>
 
     <div id="sidebar">
-        <!-- Seismic layers -->
-        <div class="layer-section">
-            <h3>SEISMIC</h3>
-            <label class="lt"><input type="checkbox" checked data-layer="earthquakes"><span class="dot" style="background:#f64"></span>Earthquakes M4.5+</label>
-            <label class="lt"><input type="checkbox" checked data-layer="eq-waves"><span class="dot" style="background:#f64"></span>Wave Propagation</label>
-            <label class="lt"><input type="checkbox" data-layer="plates"><span class="dot" style="background:#446"></span>Plate Boundaries</label>
-        </div>
-        <!-- Solar layers -->
-        <div class="layer-section">
-            <h3>SOLAR / MAGNETIC</h3>
-            <label class="lt"><input type="checkbox" checked data-layer="jelly-ball"><span class="dot" style="background:#44f"></span>Jelly Ball Zones</label>
-            <label class="lt"><input type="checkbox" checked data-layer="subsolar"><span class="dot" style="background:#ff0"></span>Subsolar Point</label>
-            <label class="lt"><input type="checkbox" checked data-layer="terminator"><span class="dot" style="background:#f60"></span>Terminator</label>
-            <label class="lt"><input type="checkbox" data-layer="magnetometers"><span class="dot" style="background:#c4c"></span>Magnetometers</label>
-        </div>
-        <!-- Deep time -->
-        <div class="layer-section">
-            <h3>DEEP TIME</h3>
-            <label class="lt"><input type="checkbox" id="paleomag-toggle"><span class="dot" style="background:#f84"></span>Bronze Age Field</label>
-        </div>
+        <!-- ============ SUN ============ -->
+        <div class="sec">
+            <h2>SUN <span class="tag" id="solar-status">(connecting...)</span></h2>
 
-        <!-- Order Parameter -->
-        <div class="p" style="text-align:center">
-            <h4>KT ORDER PARAMETER</h4>
-            <div class="state stable" id="op-state">--</div>
-            <div class="d" id="op-detail">df/dt via GOES XRS</div>
-        </div>
-
-        <!-- Kp + Dst side by side -->
-        <div style="display:flex; gap:6px;">
-            <div class="p" style="flex:1;text-align:center">
-                <h4>Kp</h4>
-                <div class="m q" id="kp-metric">--</div>
+            <!-- Solar image + escalation -->
+            <div class="p" id="sun-panel">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <div class="sun-btns" id="sun-selector">
+                        <button class="on" data-img="eit_195">195A</button>
+                        <button data-img="eit_304">304A</button>
+                        <button data-img="eit_171">171A</button>
+                        <button data-img="hmi_mag">MAG</button>
+                        <button data-img="hmi_con">SPOT</button>
+                        <button data-img="lasco_c2">C2</button>
+                        <button data-img="lasco_c3">C3</button>
+                    </div>
+                    <div class="esc-badge esc-quiet" id="esc-state">QUIET</div>
+                </div>
+                <img id="sun-image" src="" alt="Loading..." style="background:#0a0a1a;">
+                <div class="d" id="esc-detail" style="margin-top:3px;">7-detector rank fusion</div>
             </div>
-            <div class="p" style="flex:1;text-align:center">
-                <h4>Dst</h4>
-                <div class="m q" id="dst-metric">--</div>
-                <div class="d">nT (ring current)</div>
+
+            <!-- X-ray + Order Param side by side -->
+            <div class="p">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
+                    <h4>GOES X-RAY</h4>
+                    <div class="state stable" id="op-state" style="font-size:10px;padding:1px 6px;">--</div>
+                </div>
+                <canvas id="xrs-chart"></canvas>
+            </div>
+
+            <!-- Detectors -->
+            <div class="p" id="detector-panel">
+                <h4>DETECTORS</h4>
+                <div class="det-row"><span class="det-label">Z-SCORE</span><div class="det-bar-bg"><div class="det-bar" id="det-zscore" style="width:0%"></div></div><span class="det-score" id="ds-zscore">--</span></div>
+                <div class="det-row"><span class="det-label">CUSUM</span><div class="det-bar-bg"><div class="det-bar" id="det-cusum" style="width:0%"></div></div><span class="det-score" id="ds-cusum">--</span></div>
+                <div class="det-row"><span class="det-label">HARDNESS</span><div class="det-bar-bg"><div class="det-bar" id="det-hardness" style="width:0%"></div></div><span class="det-score" id="ds-hardness">--</span></div>
+                <div class="det-row"><span class="det-label">dF/dt</span><div class="det-bar-bg"><div class="det-bar" id="det-rate" style="width:0%"></div></div><span class="det-score" id="ds-rate">--</span></div>
+                <div class="det-row"><span class="det-label">MULTI-CH</span><div class="det-bar-bg"><div class="det-bar" id="det-multichannel" style="width:0%"></div></div><span class="det-score" id="ds-multichannel">--</span></div>
+                <div class="det-row"><span class="det-label">PROTON</span><div class="det-bar-bg"><div class="det-bar" id="det-proton" style="width:0%"></div></div><span class="det-score" id="ds-proton">--</span></div>
+                <div class="det-row"><span class="det-label">CRITICAL</span><div class="det-bar-bg"><div class="det-bar" id="det-criticality" style="width:0%"></div></div><span class="det-score" id="ds-criticality">--</span></div>
+                <div class="fused-bar"><span class="fused-label" id="fused-label">FUSED: --</span><div class="fused-fill" id="fused-fill" style="width:0%"></div></div>
+                <div class="d">Agreement: <span id="det-agreement">--</span>/7</div>
             </div>
         </div>
 
-        <!-- Solar Wind Bz -->
-        <div class="p"><h4>SOLAR WIND Bz</h4><canvas id="sw-chart"></canvas></div>
+        <!-- ============ HELIOSPHERE ============ -->
+        <div class="sec">
+            <h2>HELIOSPHERE</h2>
 
-        <!-- X-ray flux -->
-        <div class="p"><h4>GOES X-RAY</h4><canvas id="xrs-chart"></canvas></div>
-
-        <!-- Sun View -->
-        <div class="p" id="sun-panel">
-            <h4>SUN</h4>
-            <div class="sun-btns" id="sun-selector">
-                <button class="on" data-img="eit_195">195</button>
-                <button data-img="eit_304">304</button>
-                <button data-img="eit_171">171</button>
-                <button data-img="eit_284">284</button>
-                <button data-img="hmi_mag">MAG</button>
-                <button data-img="hmi_con">SPOT</button>
-                <button data-img="lasco_c2">C2</button>
-                <button data-img="lasco_c3">C3</button>
+            <div class="layer-group">
+                <label class="lt"><input type="checkbox" checked data-layer="magnetosphere"><span class="dot" style="background:#0af"></span>Magnetosphere</label>
+                <label class="lt"><input type="checkbox" checked data-layer="solar-wind"><span class="dot" style="background:#ff0"></span>Solar Wind</label>
+                <label class="lt"><input type="checkbox" checked data-layer="comet"><span class="dot" style="background:#0ff"></span>Comet (perihelion)</label>
             </div>
-            <img id="sun-image" src="" alt="Loading...">
+
+            <!-- Solar Wind Bz -->
+            <div class="p"><h4>SOLAR WIND Bz</h4><canvas id="sw-chart"></canvas></div>
+
+            <!-- Coupling Pathways -->
+            <div class="p" id="pathway-panel">
+                <h4>COUPLING PATHWAYS</h4>
+                <div class="pw-row"><span class="pw-name">FORBUSH</span><div class="pw-bar-bg"><div class="pw-bar" id="pw-forbush" style="width:0%;background:#6644ff"></div></div><span class="pw-dir" id="pwd-forbush">-</span><span class="pw-score" id="pws-forbush">--</span></div>
+                <div class="pw-row"><span class="pw-name">HEEP</span><div class="pw-bar-bg"><div class="pw-bar" id="pw-heep" style="width:0%;background:#44ffaa"></div></div><span class="pw-dir" id="pwd-heep">+</span><span class="pw-score" id="pws-heep">--</span></div>
+                <div class="pw-row"><span class="pw-name">SSC</span><div class="pw-bar-bg"><div class="pw-bar" id="pw-ssc" style="width:0%;background:#ff44aa"></div></div><span class="pw-dir" id="pwd-ssc">+</span><span class="pw-score" id="pws-ssc">--</span></div>
+                <div class="pw-row"><span class="pw-name">MANSUROV</span><div class="pw-bar-bg"><div class="pw-bar" id="pw-mansurov" style="width:0%;background:#ffff44"></div></div><span class="pw-dir" id="pwd-mansurov">+</span><span class="pw-score" id="pws-mansurov">--</span></div>
+                <div class="pw-row"><span class="pw-name">LUNAR</span><div class="pw-bar-bg"><div class="pw-bar" id="pw-lunar" style="width:0%;background:#888"></div></div><span class="pw-dir" id="pwd-lunar">-</span><span class="pw-score" id="pws-lunar">--</span></div>
+                <div class="stress-gauge">
+                    <div class="stress-val" id="stress-val">0.00</div>
+                    <div class="stress-label">ATMOSPHERIC STRESS INDEX</div>
+                </div>
+            </div>
+
+            <!-- Cosmic Rays -->
+            <div class="metric-pair">
+                <div class="p">
+                    <h4>COSMIC RAYS</h4>
+                    <div class="m q" id="cr-metric" style="font-size:14px;">--</div>
+                    <div class="d" id="cr-detail">NMDB neutron monitors</div>
+                </div>
+                <div class="p">
+                    <h4>LUNAR / TIDAL</h4>
+                    <div class="m" id="lunar-metric" style="font-size:12px;">--</div>
+                    <div class="d" id="lunar-detail"></div>
+                </div>
+            </div>
         </div>
 
-        <!-- Lunar -->
-        <div class="p">
-            <h4>LUNAR / TIDAL</h4>
-            <div class="m" id="lunar-metric">--</div>
-            <div class="d" id="lunar-detail"></div>
+        <!-- ============ EARTH ============ -->
+        <div class="sec">
+            <h2>EARTH</h2>
+
+            <div class="layer-group">
+                <label class="lt"><input type="checkbox" checked data-layer="earthquakes"><span class="dot" style="background:#f64"></span>Earthquakes M4.5+</label>
+                <label class="lt"><input type="checkbox" checked data-layer="eq-waves"><span class="dot" style="background:#f64"></span>Seismic Waves</label>
+                <label class="lt"><input type="checkbox" checked data-layer="jelly-ball"><span class="dot" style="background:#44f"></span>Jelly Ball Zones</label>
+                <label class="lt"><input type="checkbox" checked data-layer="subsolar"><span class="dot" style="background:#ff0"></span>Subsolar Point</label>
+                <label class="lt"><input type="checkbox" checked data-layer="terminator"><span class="dot" style="background:#f60"></span>Terminator</label>
+                <label class="lt"><input type="checkbox" checked data-layer="plates"><span class="dot" style="background:#446"></span>Plate Boundaries</label>
+                <label class="lt"><input type="checkbox" data-layer="magnetometers"><span class="dot" style="background:#c4c"></span>Magnetometers</label>
+                <label class="lt"><input type="checkbox" data-layer="geojson"><span class="dot" style="background:#4cc"></span>Custom Layers</label>
+            </div>
+
+            <!-- Plate legend -->
+            <div class="plate-legend" id="plate-legend"></div>
+
+            <!-- Geomagnetic -->
+            <div class="metric-pair">
+                <div class="p">
+                    <h4>Kp</h4>
+                    <div class="m q" id="kp-metric" style="font-size:16px;">--</div>
+                </div>
+                <div class="p">
+                    <h4>Dst</h4>
+                    <div class="m q" id="dst-metric" style="font-size:16px;">--</div>
+                    <div class="d">nT ring current</div>
+                </div>
+            </div>
+
+            <!-- Field Strengths -->
+            <div class="p" id="fields-panel">
+                <h4>FIELD STRENGTHS</h4>
+                <div class="field-row">
+                    <span class="field-name">Fair Weather Ez</span>
+                    <div class="field-bar"><div class="field-bar-fill" id="fb-fwf" style="width:50%;background:#4488ff"></div></div>
+                    <span class="field-val" id="fv-fwf" style="color:#4488ff">~130 V/m</span>
+                </div>
+                <div class="field-row">
+                    <span class="field-name">Telluric J</span>
+                    <div class="field-bar"><div class="field-bar-fill" id="fb-telluric" style="width:20%;background:#ff8844"></div></div>
+                    <span class="field-val" id="fv-telluric" style="color:#ff8844">-- mA/km</span>
+                </div>
+                <div class="field-row">
+                    <span class="field-name">Mansurov dB/dt</span>
+                    <div class="field-bar"><div class="field-bar-fill" id="fb-mansurov" style="width:10%;background:#ffff44"></div></div>
+                    <span class="field-val" id="fv-mansurov" style="color:#ffff44">-- nT/hr</span>
+                </div>
+                <div class="field-row">
+                    <span class="field-name">Schumann f1</span>
+                    <div class="field-bar"><div class="field-bar-fill" id="fb-schumann" style="width:50%;background:#44ffaa"></div></div>
+                    <span class="field-val" id="fv-schumann" style="color:#44ffaa">~7.83 Hz</span>
+                </div>
+                <div class="field-row">
+                    <span class="field-name">GIC Risk</span>
+                    <div class="field-bar"><div class="field-bar-fill" id="fb-gic" style="width:5%;background:#ff4466"></div></div>
+                    <span class="field-val" id="fv-gic" style="color:#ff4466">LOW</span>
+                </div>
+            </div>
+
+            <!-- Live Seismogram -->
+            <div class="p" id="seismo-panel">
+                <h4>SEISMOGRAM <span style="font-size:8px;color:#556" id="seismo-station">IU.ANMO.BHZ</span></h4>
+                <canvas id="seismo-chart"></canvas>
+                <div class="seismo-meta">
+                    <span id="seismo-time">--</span>
+                    <span id="seismo-amp">-- nm/s</span>
+                </div>
+            </div>
+
+            <!-- GeoJSON/KML Drop -->
+            <div id="drop-zone">Drop GeoJSON or KML to add layer</div>
         </div>
 
-        <!-- Cosmic Rays -->
-        <div class="p">
-            <h4>COSMIC RAYS</h4>
-            <div class="m q" id="cr-metric">--</div>
-            <div class="d" id="cr-detail">NMDB neutron monitors</div>
-        </div>
-
-        <!-- Paleomag Bronze Age -->
-        <div class="p" id="paleomag-panel" style="display:none">
-            <h4>BRONZE AGE FIELD (pfm9k.2)</h4>
-            <canvas id="paleomag-chart"></canvas>
-            <div class="d">Levant (red) vs China (yellow) | dashed = 1200 BCE collapse</div>
-            <div style="margin-top:4px">
-                <a href="assets/bronze_age_field.png" target="_blank" style="color:#0cf;font-size:9px">Full analysis plot</a>
+        <!-- ============ DEEP TIME ============ -->
+        <div class="sec">
+            <h2>DEEP TIME</h2>
+            <label class="lt"><input type="checkbox" id="paleomag-toggle"><span class="dot" style="background:#f84"></span>Bronze Age Field (pfm9k.2)</label>
+            <div class="p" id="paleomag-panel" style="display:none">
+                <canvas id="paleomag-chart"></canvas>
+                <div class="d">Levant (red) vs China (yellow) | dashed = 1200 BCE</div>
             </div>
         </div>
     </div>
 
-    <!-- Time control slider -->
+    <!-- Time control -->
     <div id="time-control">
         <label>HISTORY</label>
         <input type="range" id="time-slider" min="0" max="72" value="0" step="1">

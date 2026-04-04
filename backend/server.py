@@ -12,10 +12,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 import httpx
+import asyncio
+import os
 
 app = FastAPI(title="Global Resonance", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -599,6 +602,264 @@ def get_paleomag():
     return {"error": "Run paleomag_plots.py first to generate data"}
 
 
+@app.get("/api/plates")
+def get_plates():
+    """Labeled tectonic plate boundaries as GeoJSON FeatureCollection."""
+    plates_file = Path(__file__).parent.parent / "frontend" / "src" / "plates.json"
+    if not plates_file.exists():
+        return {"type": "FeatureCollection", "features": []}
+
+    segs = json.loads(plates_file.read_text())
+
+    # Major plate boundary regions: (name, color, lon_min, lat_min, lon_max, lat_max, boundary_type)
+    REGIONS = [
+        ("Mid-Atlantic Ridge (N)", "#4466cc", -50, 10, -10, 70, "divergent"),
+        ("Mid-Atlantic Ridge (S)", "#4488aa", -30, -60, 10, 10, "divergent"),
+        ("East Pacific Rise", "#cc4466", -130, -60, -80, 20, "divergent"),
+        ("Cascadia / Juan de Fuca", "#ff6644", -135, 38, -120, 52, "convergent"),
+        ("San Andreas", "#ff8844", -125, 30, -115, 42, "transform"),
+        ("Peru-Chile Trench", "#ff4444", -85, -55, -65, 0, "convergent"),
+        ("Central America Trench", "#ff6622", -110, 5, -75, 22, "convergent"),
+        ("Caribbean Arc", "#ff8866", -80, 10, -55, 22, "convergent"),
+        ("Aleutian Trench", "#dd4444", 165, 48, -165, 58, "convergent"),
+        ("Japan Trench", "#ee4444", 135, 25, 150, 45, "convergent"),
+        ("Mariana Trench", "#dd2244", 140, 8, 150, 25, "convergent"),
+        ("Philippine Trench", "#cc3344", 120, 5, 135, 22, "convergent"),
+        ("Tonga-Kermadec", "#dd4466", 172, -38, -175, -12, "convergent"),
+        ("Sunda Trench", "#ee4422", 90, -12, 125, 8, "convergent"),
+        ("Himalayan Front", "#ff8800", 68, 24, 100, 38, "convergent"),
+        ("Alpine-Mediterranean", "#ff9944", -10, 32, 50, 48, "convergent"),
+        ("East African Rift", "#44aa66", 25, -20, 45, 15, "divergent"),
+        ("Red Sea Rift", "#44cc66", 30, 10, 48, 30, "divergent"),
+        ("Mid-Indian Ridge", "#4488cc", 50, -55, 100, -10, "divergent"),
+        ("Southeast Indian Ridge", "#4466aa", 80, -65, 150, -35, "divergent"),
+        ("Pacific-Antarctic Ridge", "#4488bb", -180, -68, -80, -50, "divergent"),
+        ("Scotia Arc", "#886644", -70, -62, -25, -52, "transform"),
+        ("Antarctic Plate (S)", "#668888", -180, -80, 180, -60, "divergent"),
+        ("Ring of Fire (W Pacific)", "#ff5533", 105, -50, 170, 60, "convergent"),
+        ("North American (W)", "#cc6644", -170, 50, -120, 72, "transform"),
+    ]
+
+    def classify_segment(seg):
+        """Assign a name/color to a segment based on its centroid."""
+        lons = [p[0] for p in seg]
+        lats = [p[1] for p in seg]
+        clon = sum(lons) / len(lons)
+        clat = sum(lats) / len(lats)
+
+        best = ("Unknown Boundary", "#445566", "unknown")
+        best_dist = 1e9
+        for name, color, lo0, la0, lo1, la1, btype in REGIONS:
+            # Handle wrap-around for Pacific
+            if lo0 > lo1:
+                in_lon = clon > lo0 or clon < lo1
+            else:
+                in_lon = lo0 <= clon <= lo1
+            in_lat = la0 <= clat <= la1
+            if in_lon and in_lat:
+                cx = (lo0 + lo1) / 2 if lo0 < lo1 else ((lo0 + lo1 + 360) / 2) % 360 - 180
+                cy = (la0 + la1) / 2
+                d = math.sqrt((clon - cx) ** 2 + (clat - cy) ** 2)
+                if d < best_dist:
+                    best_dist = d
+                    best = (name, color, btype)
+        return best
+
+    features = []
+    for i, seg in enumerate(segs):
+        if len(seg) < 2:
+            continue
+        name, color, btype = classify_segment(seg)
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "name": name,
+                "color": color,
+                "boundary_type": btype,
+                "segment_id": i,
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": seg,
+            },
+        })
+
+    # Summary of plates loaded
+    plate_names = sorted(set(f["properties"]["name"] for f in features))
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "summary": {
+            "total_segments": len(features),
+            "named_boundaries": plate_names,
+        },
+    }
+
+
+@app.get("/api/seismic/waveform")
+async def get_seismic_waveform(station: str = "ANMO", network: str = "IU",
+                                channel: str = "BHZ", duration: int = 600):
+    """Live seismogram data from IRIS FDSN."""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(seconds=duration)
+    url = (
+        f"https://service.iris.edu/irisws/timeseries/1/query?"
+        f"net={network}&sta={station}&loc=00&cha={channel}"
+        f"&starttime={start.strftime('%Y-%m-%dT%H:%M:%S')}"
+        f"&endtime={now.strftime('%Y-%m-%dT%H:%M:%S')}"
+        f"&output=ascii&nodata=404"
+    )
+    cache_key = f"seismo_{station}_{channel}"
+    now_ts = time.time()
+    if cache_key in CACHE and now_ts - CACHE[cache_key]["ts"] < 60:
+        return CACHE[cache_key]["data"]
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                return {"error": "No data available", "station": station}
+            text = resp.text
+    except Exception as e:
+        return {"error": str(e), "station": station}
+
+    # Parse IRIS ASCII: header line starting with TIMESERIES, then data lines
+    lines = text.strip().split("\n")
+    samples = []
+    sample_rate = 20.0
+    start_time = ""
+    for line in lines:
+        if line.startswith("TIMESERIES"):
+            parts = line.split(",")
+            for p in parts:
+                p = p.strip()
+                if "sps" in p:
+                    try:
+                        sample_rate = float(p.split()[0])
+                    except Exception:
+                        pass
+                if p.startswith("20") and "T" in p:
+                    start_time = p
+        else:
+            try:
+                vals = line.strip().split()
+                for v in vals:
+                    samples.append(int(v))
+            except Exception:
+                pass
+
+    # Downsample for frontend (target ~500 points)
+    target = 500
+    step = max(1, len(samples) // target)
+    decimated = samples[::step] if len(samples) > target else samples
+
+    result = {
+        "station": f"{network}.{station}.{channel}",
+        "start_time": start_time,
+        "sample_rate": sample_rate,
+        "samples": decimated,
+        "raw_count": len(samples),
+        "duration_s": duration,
+    }
+    CACHE[cache_key] = {"data": result, "ts": now_ts}
+    return result
+
+
+@app.get("/api/field_strengths")
+def get_field_strengths():
+    """
+    Computed electromagnetic field strengths at Earth's surface.
+
+    Fair Weather Field: ~130 V/m baseline, modulated by cosmic rays and Kp
+    Telluric Currents: proportional to dB/dt (geomagnetic rate of change)
+    Mansurov Effect: Bz-dependent atmospheric potential modulation
+    Schumann Resonance: ~7.83 Hz, shifts with ionospheric conductivity
+    GIC Risk: dB/dt based geomagnetically induced current risk
+    """
+    # Get latest data from cache
+    kp_data = CACHE.get("kp", {}).get("data")
+    sw_data = CACHE.get("sw_mag", {}).get("data")
+    dst_data = None  # would need Dst cache
+    cr_stations = CACHE.get("cosmic_rays", {}).get("data", {})
+
+    # Current Kp
+    kp = 2.0
+    if kp_data:
+        try:
+            entries = []
+            for row in kp_data:
+                if isinstance(row, (list, tuple)) and len(row) >= 2:
+                    try:
+                        entries.append(float(row[1]))
+                    except (ValueError, TypeError):
+                        pass
+            if entries:
+                kp = entries[-1]
+        except Exception:
+            pass
+
+    # Current Bz
+    bz = 0.0
+    if sw_data:
+        try:
+            for row in reversed(sw_data[1:]):
+                v = row[3] if len(row) > 3 else None
+                if v not in (None, "", "null"):
+                    bz = float(v)
+                    break
+        except Exception:
+            pass
+
+    # Cosmic ray deviation
+    cr_dev = 0.0
+    if isinstance(cr_stations, dict) and "stations" in cr_stations:
+        devs = [s.get("deviation_pct", 0) for s in cr_stations["stations"].values()]
+        if devs:
+            cr_dev = sum(devs) / len(devs)
+
+    # === Fair Weather Field (Ez) ===
+    # Baseline ~130 V/m, suppressed by cosmic ray increase, enhanced by Forbush decrease
+    # Kp disturbs it: high Kp -> more variation
+    fwf_baseline = 130.0
+    fwf = fwf_baseline * (1 - cr_dev / 100 * 0.3)  # cosmic ray modulation
+    fwf *= (1 + kp * 0.02)  # slight Kp enhancement
+    fwf = max(50, min(250, fwf))
+
+    # === Telluric Currents (J) ===
+    # Proportional to dB/dt; Kp is a rough proxy
+    # Quiet: ~1-5 mA/km, Storm: 50-500 mA/km
+    telluric = 2.0 * math.exp(kp * 0.4)  # exponential with Kp
+    if bz < -10:
+        telluric *= 1.5  # southward Bz enhances substorms
+
+    # === Mansurov Effect (dB/dt from Kp transitions) ===
+    # Rate of Kp change drives atmospheric E-field modulation
+    mansurov_dbdt = kp * 3.5  # rough nT/hr from Kp
+    if bz < 0:
+        mansurov_dbdt *= (1 + abs(bz) / 20)
+
+    # === Schumann Resonance ===
+    # f1 ~ 7.83 Hz, shifts slightly with ionospheric conductivity
+    # Solar X-rays increase conductivity -> slight frequency increase
+    schumann = 7.83 + kp * 0.005 + (0.02 if bz < -5 else 0)
+
+    # === GIC Risk ===
+    # Based on dB/dt proxy and Kp
+    gic_score = min(1.0, (kp - 3) / 6 + (1 if bz < -15 else 0) * 0.3)
+    gic_score = max(0, gic_score)
+    gic_label = "LOW" if gic_score < 0.2 else "MODERATE" if gic_score < 0.5 else "HIGH" if gic_score < 0.8 else "EXTREME"
+
+    return {
+        "fair_weather_ez": {"value": round(fwf, 1), "unit": "V/m", "baseline": 130},
+        "telluric_j": {"value": round(telluric, 1), "unit": "mA/km"},
+        "mansurov_dbdt": {"value": round(mansurov_dbdt, 1), "unit": "nT/hr"},
+        "schumann_f1": {"value": round(schumann, 3), "unit": "Hz"},
+        "gic_risk": {"score": round(gic_score, 2), "label": gic_label},
+        "inputs": {"kp": kp, "bz": round(bz, 1), "cr_dev_pct": round(cr_dev, 1)},
+    }
+
+
 @app.get("/api/status")
 def get_status():
     """Overall system status combining all data sources."""
@@ -617,6 +878,100 @@ def get_status():
             "kp": "kp" in CACHE,
         },
     }
+
+
+# ========== Solar Monitor Proxy ==========
+# Proxies to the Rust solar-monitor running on SOLAR_MONITOR_URL (default localhost:3000)
+
+SOLAR_MONITOR_URL = os.environ.get("SOLAR_MONITOR_URL", "http://localhost:3000")
+
+
+async def _solar_proxy(path: str):
+    """Proxy a GET request to the solar monitor."""
+    url = f"{SOLAR_MONITOR_URL}/api/solar/{path}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            return resp.json()
+    except Exception as e:
+        return {"error": str(e), "source": url}
+
+
+@app.get("/api/solar/status")
+async def solar_status():
+    """Stressor index + escalation + fused detector score."""
+    return await _solar_proxy("status")
+
+
+@app.get("/api/solar/detectors")
+async def solar_detectors():
+    """Per-detector raw scores + agreement count."""
+    return await _solar_proxy("detectors")
+
+
+@app.get("/api/solar/pathways")
+async def solar_pathways():
+    """All 5 coupling pathway statuses."""
+    return await _solar_proxy("pathways")
+
+
+@app.get("/api/solar/escalation")
+async def solar_escalation():
+    """Current escalation level + precursor status."""
+    return await _solar_proxy("escalation")
+
+
+@app.get("/api/solar/feeds")
+async def solar_feeds():
+    """Latest values from all data streams."""
+    return await _solar_proxy("feeds")
+
+
+@app.get("/api/solar/feeds/{feed_name}")
+async def solar_feed(feed_name: str):
+    """Specific feed ring buffer (xray, electrons, solar-wind, kp-dst)."""
+    return await _solar_proxy(f"feeds/{feed_name}")
+
+
+@app.get("/api/solar/health")
+async def solar_health():
+    """Feed freshness check."""
+    return await _solar_proxy("health")
+
+
+@app.get("/api/solar/state")
+async def solar_state():
+    """Complete solar state snapshot (DONKI + SWPC fetch)."""
+    return await _solar_proxy("state")
+
+
+async def _sse_proxy(path: str):
+    """Proxy an SSE stream from solar monitor."""
+    url = f"{SOLAR_MONITOR_URL}/api/solar/{path}"
+
+    async def event_generator():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url) as resp:
+                    async for line in resp.aiter_lines():
+                        yield line + "\n"
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/solar/metrics")
+async def solar_metrics_sse():
+    """SSE stream of metrics (per poll cycle)."""
+    return await _sse_proxy("metrics")
+
+
+@app.get("/api/solar/alerts")
+async def solar_alerts_sse():
+    """SSE stream of alert events."""
+    return await _sse_proxy("alerts")
 
 
 # Serve frontend if available
