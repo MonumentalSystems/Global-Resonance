@@ -236,9 +236,21 @@
             <h2>HELIOSPHERE</h2>
 
             <div class="layer-group">
-                <label class="lt"><input type="checkbox" checked data-layer="magnetosphere"><span class="dot" style="background:#0af"></span>Magnetosphere</label>
+                <label class="lt"><input type="checkbox" checked data-layer="magnetosphere"><span class="dot" style="background:#0af"></span>Magnetosphere (field + aurora + ring current)</label>
                 <label class="lt"><input type="checkbox" checked data-layer="solar-wind"><span class="dot" style="background:#ff0"></span>Solar Wind</label>
                 <label class="lt"><input type="checkbox" checked data-layer="comet"><span class="dot" style="background:#0ff"></span>Comet (perihelion)</label>
+            </div>
+            <!-- Storm indicators -->
+            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                <div style="font-size:8px;color:#556;">Storm:
+                    <span id="storm-indicator" style="font-weight:bold;color:#4f4;">QUIET</span>
+                </div>
+                <div style="font-size:8px;color:#556;">Aurora:
+                    <span id="aurora-lat" style="color:#44ff88;">70°</span>
+                </div>
+                <div style="font-size:8px;color:#556;">Ring:
+                    <span id="ring-current-val" style="color:#ffaa44;">--</span>
+                </div>
             </div>
 
             <!-- Solar Wind Bz -->

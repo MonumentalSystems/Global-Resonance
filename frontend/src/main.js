@@ -914,7 +914,11 @@ async function poll() {
     if (v(0)) updateEarthquakes(v(0));
     if (v(1)) { updateSubsolar(v(1)); updateJellyBall(v(1)); updateTerminator(v(1)); }
     if (v(2)) updKp(v(2));
-    if (v(3)) { updSW(v(3)); if (v(3).current_speed) swSpeed = v(3).current_speed; if (v(3).current_bz != null) updateMagnetosphereCompression(v(3).current_bz); }
+    if (v(3)) {
+        updSW(v(3));
+        if (v(3).current_speed) swSpeed = v(3).current_speed;
+        if (v(3).current_bz != null) updateMagnetosphereCompression(v(3).current_bz);
+    }
     if (v(4)) updXRS(v(4));
     if (v(5)) updSun(v(5));
     if (v(6)) updLunar(v(6));
@@ -924,6 +928,10 @@ async function poll() {
     if (v(10)) updFieldStrengths(v(10));
     if (v(11)) drawSeismogram(v(11));
     if (v(12)) updJellyBall(v(12));
+    // Update magnetosphere storm visualization from Kp + Dst
+    const kpVal = v(2)?.current ?? currentKp;
+    const dstVal = v(8)?.current ?? currentDst;
+    updateStormLevel(kpVal, dstVal);
 }
 poll();
 setInterval(poll, POLL);
@@ -1068,37 +1076,270 @@ setInterval(pollSolar, POLL);
 // THREE.JS PHYSICS VISUALIZATIONS
 // ============================================================
 
-// Magnetosphere
-let magnetoCompression = 1.0;
+// ===== MAGNETOSPHERE (full physics visualization) =====
+let magnetoCompression = 1.0;  // 1.0 = quiet, 0.4 = extreme compression
+let stormLevel = 0;            // 0 = quiet, 1 = extreme (from Kp/Dst)
+let currentBz = 0;
+let currentKp = 2;
+let currentDst = 0;
+
+// Aurora oval meshes (animated separately)
+let auroraNorth = null, auroraSouth = null;
+let auroraGlowN = null, auroraGlowS = null;
+// Ring current torus
+let ringCurrentMesh = null;
+// Magnetotail sheet
+let magnetotail = null;
+// Reconnection particles
+let reconnectionPts = null, reconnectionPositions = null;
+
 function buildMagnetosphere() {
     clearLayer('magnetosphere');
     const layer = getLayer('magnetosphere');
-    for (let i = 0; i < 12; i++) {
-        const phi = (i / 12) * Math.PI * 2, pts = [];
+
+    // Storm intensity drives visual parameters
+    // stormLevel: 0=quiet, 0.3=unsettled, 0.6=storm, 1.0=extreme
+    const stormHue = 0.6 - stormLevel * 0.4;  // blue(0.6) -> red(0.2)
+    const fieldOpacity = 0.15 + stormLevel * 0.25;
+    const nFieldLines = 16 + Math.floor(stormLevel * 8);
+
+    // --- DIPOLE FIELD LINES ---
+    for (let i = 0; i < nFieldLines; i++) {
+        const phi = (i / nFieldLines) * Math.PI * 2;
+        const shell = (i % 4);
+        const Lshell = 2.0 + shell * 0.5;
+        const pts = [];
+
         for (let j = 0; j <= 80; j++) {
             const t = (j / 80) * Math.PI;
-            const Lshell = 2.5 + (i % 3) * 0.6, r = Lshell * Math.sin(t) * Math.sin(t);
-            let x = r * Math.sin(t) * Math.cos(phi), y = r * Math.cos(t), z = r * Math.sin(t) * Math.sin(phi);
+            const r = Lshell * Math.sin(t) * Math.sin(t);
+            let x = r * Math.sin(t) * Math.cos(phi);
+            let y = r * Math.cos(t);
+            let z = r * Math.sin(t) * Math.sin(phi);
+
+            // Sunward compression
             if (x > 0) x *= magnetoCompression;
-            if (x < 0) x *= (1 + (1 - magnetoCompression) * 0.5);
+            // Nightside stretching (magnetotail)
+            if (x < 0) {
+                const stretch = 1 + (1 - magnetoCompression) * 1.2;
+                x *= stretch;
+                // Tail field lines get pulled into a sheet
+                y *= 1 - Math.abs(x) * 0.05 * (1 - magnetoCompression);
+            }
+
             pts.push(new THREE.Vector3(x * 0.4, y * 0.4, z * 0.4));
         }
-        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: new THREE.Color().setHSL(0.55 + (i % 3) * 0.05, 0.6, 0.5), transparent: true, opacity: 0.2 + (i % 3) * 0.05 })));
+
+        const hue = stormHue + (shell * 0.03);
+        const sat = 0.5 + stormLevel * 0.3;
+        const lum = 0.4 + shell * 0.05;
+        const lineColor = new THREE.Color().setHSL(hue, sat, lum);
+        const opacity = fieldOpacity + (shell === 0 ? 0.05 : 0);
+
+        layer.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: lineColor, transparent: true, opacity })
+        ));
     }
-    // Bow shock
+
+    // --- BOW SHOCK ---
     const bowPts = [];
-    for (let i = 0; i <= 60; i++) {
-        const a = (i / 60) * Math.PI * 2, rBow = 1.3 * magnetoCompression + 0.2;
-        bowPts.push(new THREE.Vector3(rBow * 0.5 + 0.3, rBow * Math.sin(a) * 0.8, rBow * Math.cos(a) * 0.8));
+    const bowR = 1.3 * magnetoCompression + 0.2;
+    for (let i = 0; i <= 80; i++) {
+        const a = (i / 80) * Math.PI * 2;
+        bowPts.push(new THREE.Vector3(
+            bowR * 0.5 + 0.3,
+            bowR * Math.sin(a) * 0.8,
+            bowR * Math.cos(a) * 0.8
+        ));
     }
-    layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(bowPts),
-        new THREE.LineBasicMaterial({ color: 0x44aaff, transparent: true, opacity: 0.12 })));
+    const bowColor = stormLevel > 0.5 ? 0xff6644 : stormLevel > 0.2 ? 0xffaa44 : 0x44aaff;
+    layer.add(new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(bowPts),
+        new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.15 + stormLevel * 0.2 })
+    ));
+
+    // --- MAGNETOPAUSE SHELL (translucent surface) ---
+    const mpGeo = new THREE.SphereGeometry(R * 1.15, 32, 24, 0, Math.PI); // half sphere, sunward
+    const mpMat = new THREE.MeshBasicMaterial({
+        color: stormLevel > 0.5 ? 0xff4444 : 0x4488cc,
+        transparent: true,
+        opacity: 0.03 + stormLevel * 0.06,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+    });
+    const mpMesh = new THREE.Mesh(mpGeo, mpMat);
+    mpMesh.rotation.y = Math.PI / 2; // face sunward
+    mpMesh.scale.x = magnetoCompression;
+    layer.add(mpMesh);
+
+    // --- AURORA OVALS ---
+    buildAuroraOval(layer, true);   // north
+    buildAuroraOval(layer, false);  // south
+
+    // --- RING CURRENT (equatorial torus, brightens with Dst) ---
+    const rcRadius = 0.28;  // ~4 Re
+    const rcTube = 0.03 + stormLevel * 0.04;
+    const rcGeo = new THREE.TorusGeometry(rcRadius, rcTube, 12, 48);
+    const rcIntensity = Math.min(1, Math.abs(currentDst) / 100);
+    const rcColor = new THREE.Color().setHSL(0.08, 0.9, 0.3 + rcIntensity * 0.4); // orange-yellow
+    ringCurrentMesh = new THREE.Mesh(rcGeo, new THREE.MeshBasicMaterial({
+        color: rcColor, transparent: true, opacity: 0.08 + rcIntensity * 0.2, depthWrite: false,
+    }));
+    ringCurrentMesh.rotation.x = Math.PI / 2; // equatorial plane
+    layer.add(ringCurrentMesh);
+
+    // --- MAGNETOTAIL CURRENT SHEET ---
+    const tailPts = [];
+    for (let i = 0; i < 30; i++) {
+        const x = -0.3 - i * 0.12;
+        const halfWidth = 0.15 + i * 0.02;
+        tailPts.push(new THREE.Vector3(x, 0, -halfWidth));
+        tailPts.push(new THREE.Vector3(x, 0, halfWidth));
+    }
+    const tailGeo = new THREE.BufferGeometry().setFromPoints(tailPts);
+    magnetotail = new THREE.LineSegments(tailGeo, new THREE.LineBasicMaterial({
+        color: 0xff6644, transparent: true, opacity: 0.06 + stormLevel * 0.1,
+    }));
+    layer.add(magnetotail);
+
+    // --- RECONNECTION SITE (when Bz southward) ---
+    if (currentBz < -3) {
+        buildReconnection(layer);
+    }
 }
+
+function buildAuroraOval(layer, isNorth) {
+    // Aurora oval: elliptical ring at ~65-75 deg latitude
+    // Wider and brighter during storms (lower latitude)
+    const baseLatitude = 70 - stormLevel * 12;  // 70 deg quiet, 58 deg extreme
+    const ovalWidth = 3 + stormLevel * 5;       // degrees
+    const nPts = 80;
+    const intensity = 0.1 + stormLevel * 0.6;   // 0.1 quiet, 0.7 extreme
+
+    for (let ring = 0; ring < 3; ring++) {
+        const lat = baseLatitude - ovalWidth / 2 + ring * (ovalWidth / 2);
+        const actualLat = isNorth ? lat : -lat;
+        const pts = [];
+
+        for (let i = 0; i <= nPts; i++) {
+            const lon = (i / nPts) * 360 - 180;
+            // Aurora is brighter on the nightside (away from sun)
+            const nightFactor = 1 + 0.3 * Math.max(0, -Math.cos(lon * Math.PI / 180));
+            const r = R * 1.008;
+            pts.push(ll2v(actualLat, lon, r));
+        }
+
+        const auroraColor = isNorth ? 0x44ff88 : 0x44ff88;  // green aurora
+        const ringOpacity = intensity * (ring === 1 ? 1.0 : 0.5) * (ring === 1 ? 1 : 0.6);
+
+        const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({
+                color: auroraColor, transparent: true, opacity: ringOpacity, linewidth: 2,
+            })
+        );
+        line.name = isNorth ? 'aurora-n-' + ring : 'aurora-s-' + ring;
+        layer.add(line);
+    }
+
+    // Aurora glow (wider, fainter halo)
+    if (stormLevel > 0.2) {
+        const glowLat = isNorth ? baseLatitude : -baseLatitude;
+        const glowGeo = new THREE.RingGeometry(
+            R * 0.95 * Math.sin((90 - baseLatitude - 5) * Math.PI / 180),
+            R * 0.95 * Math.sin((90 - baseLatitude + 5) * Math.PI / 180),
+            48
+        );
+        const glowMat = new THREE.MeshBasicMaterial({
+            color: 0x44ff88, transparent: true, opacity: stormLevel * 0.15,
+            side: THREE.DoubleSide, depthWrite: false,
+        });
+        const glow = new THREE.Mesh(glowGeo, glowMat);
+        glow.rotation.x = isNorth ? 0 : Math.PI;
+        glow.position.y = isNorth ? R * Math.cos((90 - baseLatitude) * Math.PI / 180) : -R * Math.cos((90 - baseLatitude) * Math.PI / 180);
+        glow.name = isNorth ? 'aurora-glow-n' : 'aurora-glow-s';
+        layer.add(glow);
+    }
+}
+
+function buildReconnection(layer) {
+    // Particles jetting from reconnection point on dayside (Bz southward)
+    const nParts = 40;
+    const geo = new THREE.BufferGeometry();
+    reconnectionPositions = new Float32Array(nParts * 3);
+    for (let i = 0; i < nParts; i++) {
+        reconnectionPositions[i * 3] = 0.5 + Math.random() * 0.2;
+        reconnectionPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.3;
+        reconnectionPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.1;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(reconnectionPositions, 3));
+    reconnectionPts = new THREE.Points(geo, new THREE.PointsMaterial({
+        color: 0xff4488, size: 0.008, transparent: true, opacity: 0.6,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    reconnectionPts.name = 'reconnection';
+    layer.add(reconnectionPts);
+}
+
+function animateReconnection() {
+    if (!reconnectionPositions) return;
+    for (let i = 0; i < reconnectionPositions.length / 3; i++) {
+        const ix = i * 3;
+        // Particles jet along field lines toward poles
+        const dir = i % 2 === 0 ? 1 : -1;
+        reconnectionPositions[ix] -= 0.004;  // tailward
+        reconnectionPositions[ix + 1] += dir * 0.003;  // poleward
+        // Reset when too far
+        if (Math.abs(reconnectionPositions[ix + 1]) > 0.6 || reconnectionPositions[ix] < -0.5) {
+            reconnectionPositions[ix] = 0.5 + Math.random() * 0.2;
+            reconnectionPositions[ix + 1] = (Math.random() - 0.5) * 0.1;
+            reconnectionPositions[ix + 2] = (Math.random() - 0.5) * 0.1;
+        }
+    }
+    if (reconnectionPts) reconnectionPts.geometry.attributes.position.needsUpdate = true;
+}
+
 function updateMagnetosphereCompression(bz) {
+    currentBz = bz;
     const c = bz < 0 ? Math.max(0.4, 1 + bz / 30) : 1.0;
-    if (Math.abs(c - magnetoCompression) > 0.02) { magnetoCompression = c; buildMagnetosphere(); }
+    if (Math.abs(c - magnetoCompression) > 0.02) {
+        magnetoCompression = c;
+        buildMagnetosphere();
+    }
 }
+
+function updateStormLevel(kp, dst) {
+    currentKp = kp;
+    currentDst = dst;
+    const kpLevel = Math.max(0, (kp - 3) / 6);
+    const dstLevel = Math.min(1, Math.max(0, Math.abs(dst) / 150));
+    const newLevel = Math.max(kpLevel, dstLevel);
+    if (Math.abs(newLevel - stormLevel) > 0.05) {
+        stormLevel = newLevel;
+        buildMagnetosphere();
+
+        // Update storm indicators in sidebar
+        const si = document.getElementById('storm-indicator');
+        if (si) {
+            const label = stormLevel > 0.7 ? 'EXTREME' : stormLevel > 0.5 ? 'MAJOR' : stormLevel > 0.3 ? 'MODERATE' : stormLevel > 0.1 ? 'MINOR' : 'QUIET';
+            si.textContent = label;
+            si.style.color = stormLevel > 0.5 ? '#f44' : stormLevel > 0.2 ? '#ff4' : '#4f4';
+        }
+        const al = document.getElementById('aurora-lat');
+        if (al) {
+            const lat = Math.round(70 - stormLevel * 12);
+            al.textContent = lat + '°';
+            al.style.color = stormLevel > 0.3 ? '#88ffaa' : '#44ff88';
+        }
+        const rc = document.getElementById('ring-current-val');
+        if (rc) {
+            rc.textContent = `${dst} nT`;
+            rc.style.color = dst < -100 ? '#f44' : dst < -50 ? '#ffaa44' : '#4f4';
+        }
+    }
+}
+
 buildMagnetosphere();
 
 // Solar Wind Particles
@@ -1194,6 +1435,19 @@ function animate() {
     if (ss) ss.scale.setScalar(1 + 0.2 * Math.sin(frame * 0.04));
     animateSolarWind();
     animateComet();
+    if (currentBz < -3) animateReconnection();
+    // Pulse aurora brightness
+    if (stormLevel > 0.1) {
+        const auroraLayer = layerGroups['magnetosphere'];
+        if (auroraLayer) {
+            auroraLayer.children.forEach(child => {
+                if (child.name?.startsWith('aurora-n-') || child.name?.startsWith('aurora-s-')) {
+                    const base = child.name.includes('-1') ? stormLevel * 0.6 : stormLevel * 0.3;
+                    child.material.opacity = base * (0.8 + 0.2 * Math.sin(frame * 0.03 + (child.name.includes('n') ? 0 : 1)));
+                }
+            });
+        }
+    }
     renderer.render(scene, camera);
 }
 animate();
