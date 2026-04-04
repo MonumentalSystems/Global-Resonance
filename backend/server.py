@@ -768,6 +768,108 @@ def get_jellyball_prediction():
     }
 
 
+@app.get("/api/jellyball/neural")
+def get_jellyball_neural():
+    """
+    JellyBallNet neural predictions — zone-resolved seismicity ratios.
+
+    Runs the trained model on current solar wind data to predict
+    per-zone earthquake rate modulation for each storm phase.
+    """
+    try:
+        import torch
+        from jellyball_net import JellyBallNet, ZONES, J_C, N_MODES
+    except ImportError:
+        return {"error": "PyTorch or jellyball_net not available"}
+
+    model_path = Path(__file__).parent / "output" / "jellyball_net.pt"
+    if not model_path.exists():
+        return {"error": "Model not trained yet. Run jellyball_net.py first."}
+
+    import numpy as np
+
+    # Load model
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    model = JellyBallNet()
+    model.load_state_dict(checkpoint["model_state"])
+    model.eval()
+    x_mean = checkpoint["x_mean"]
+    x_std = checkpoint["x_std"]
+
+    # Get current solar data from cache
+    kp = 2.0
+    kp_data = CACHE.get("kp", {}).get("data")
+    if kp_data:
+        try:
+            for row in reversed(kp_data if isinstance(kp_data, list) else []):
+                if isinstance(row, (list, tuple)) and len(row) >= 2:
+                    try:
+                        kp = float(row[1])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
+    bz = 0.0
+    sw_data = CACHE.get("sw_mag", {}).get("data")
+    if sw_data:
+        try:
+            for row in reversed(sw_data[1:]):
+                v = row[3] if len(row) > 3 else None
+                if v not in (None, "", "null"):
+                    bz = float(v)
+                    break
+        except Exception:
+            pass
+
+    dst = -20.0  # default
+    solar_input = [kp, dst, bz, 0, 0, 0]
+    solar_norm = (np.array(solar_input, dtype=np.float32) - x_mean) / x_std
+
+    # Run model for all 4 phases
+    phase_names = ["compression", "peak", "relaxation_early", "relaxation_late"]
+    phase_values = [0.0, 0.2, 0.5, 0.8]
+    zone_names = [z[0] for z in ZONES]
+
+    predictions = {}
+    diagnostics = {}
+
+    with torch.no_grad():
+        for phase_name, phase_val in zip(phase_names, phase_values):
+            x = torch.tensor(solar_norm, dtype=torch.float32).unsqueeze(0)
+            t = torch.tensor([[phase_val]], dtype=torch.float32)
+            pred, diag = model(x, t)
+
+            zone_ratios = pred[0].numpy()
+            predictions[phase_name] = {
+                zone_names[i]: round(float(zone_ratios[i]), 3)
+                for i in range(len(zone_names))
+            }
+
+        # Get diagnostics from compression phase
+        x = torch.tensor(solar_norm, dtype=torch.float32).unsqueeze(0)
+        t = torch.tensor([[0.0]], dtype=torch.float32)
+        _, diag = model(x, t)
+        diagnostics = {
+            "J": round(float(diag["J"][0, 0]), 4),
+            "J_critical": round(J_C, 4),
+            "bivector_norm": round(float(diag["bivector_norm"][0, 0]), 4),
+            "above_critical": bool(diag["above_critical"][0, 0] > 0.5),
+            "mode_amplitudes": {
+                f"l{i+1}": round(float(diag["mode_amplitudes"][0, i]), 4)
+                for i in range(N_MODES)
+            },
+        }
+
+    return {
+        "predictions": predictions,
+        "diagnostics": diagnostics,
+        "inputs": {"kp": round(kp, 2), "bz": round(bz, 1), "dst": round(dst, 1)},
+        "model": {"params": 253, "val_mse": round(checkpoint["val_loss"], 4)},
+    }
+
+
 @app.get("/api/paleomag")
 def get_paleomag():
     """Bronze Age paleomagnetic field data from pfm9k.2."""

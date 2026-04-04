@@ -354,6 +354,22 @@
                 <div class="d" id="jb-detail" style="margin-top:3px;">--</div>
             </div>
 
+            <!-- Neural Zone Predictions -->
+            <div class="p" id="neural-panel">
+                <h4>JELLYBALL NET <span style="font-size:8px;color:#556;">(253 params, 473 storms)</span></h4>
+                <div style="display:flex;gap:2px;margin-bottom:4px;" id="nn-phase-tabs">
+                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#0cf;color:#050510;border:1px solid #0cf;border-radius:2px;cursor:pointer;" data-phase="compression">COMP</button>
+                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="peak">PEAK</button>
+                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="relaxation_early">RELAX-E</button>
+                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="relaxation_late">RELAX-L</button>
+                </div>
+                <div id="nn-zones"></div>
+                <div style="display:flex;gap:8px;margin-top:3px;font-size:8px;color:#556;">
+                    <span>Modes: <span id="nn-modes">--</span></span>
+                    <span>Biv: <span id="nn-biv">--</span></span>
+                </div>
+            </div>
+
             <!-- Field Strengths -->
             <div class="p" id="fields-panel">
                 <h4>FIELD STRENGTHS</h4>

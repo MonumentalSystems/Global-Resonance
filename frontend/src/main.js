@@ -623,6 +623,57 @@ function updJellyBall(data) {
     if (detailEl) detailEl.textContent = data.phase_detail || '--';
 }
 
+// ===== JELLYBALL NEURAL PREDICTIONS =====
+let nnData = null;
+let nnPhase = 'compression';
+
+function updNeural(data) {
+    if (!data || data.error) return;
+    nnData = data;
+    renderNeuralZones();
+
+    // Modes + bivector
+    const modes = data.diagnostics?.mode_amplitudes;
+    const modesEl = document.getElementById('nn-modes');
+    if (modesEl && modes) {
+        modesEl.textContent = Object.entries(modes).map(([k, v]) => `${k}=${v > 0 ? '+' : ''}${v.toFixed(2)}`).join(' ');
+    }
+    const bivEl = document.getElementById('nn-biv');
+    if (bivEl && data.diagnostics?.bivector_norm != null) {
+        bivEl.textContent = data.diagnostics.bivector_norm.toFixed(2);
+    }
+}
+
+function renderNeuralZones() {
+    if (!nnData?.predictions?.[nnPhase]) return;
+    const zones = nnData.predictions[nnPhase];
+    const container = document.getElementById('nn-zones');
+    if (!container) return;
+
+    container.innerHTML = Object.entries(zones).map(([name, ratio]) => {
+        const pct = Math.min(100, Math.max(0, (ratio - 0.2) / 4.8 * 100));
+        const color = ratio > 1.5 ? '#ff4444' : ratio > 1.1 ? '#ffaa44' : ratio > 0.9 ? '#44ff44' : '#4488ff';
+        return `<div class="det-row">
+            <span class="det-label">${name}</span>
+            <div class="det-bar-bg"><div class="det-bar" style="width:${pct}%;background:${color}"></div></div>
+            <span class="det-score" style="color:${color}">${ratio.toFixed(2)}</span>
+        </div>`;
+    }).join('');
+}
+
+// Phase tab buttons
+document.querySelectorAll('#nn-phase-tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+        nnPhase = btn.dataset.phase;
+        document.querySelectorAll('#nn-phase-tabs button').forEach(b => {
+            b.style.background = b === btn ? '#0cf' : '#141430';
+            b.style.color = b === btn ? '#050510' : '#aaa';
+            b.style.borderColor = b === btn ? '#0cf' : '#2a2a44';
+        });
+        renderNeuralZones();
+    });
+});
+
 // ===== FIELD STRENGTHS UPDATER =====
 function updFieldStrengths(data) {
     if (!data || data.error) return;
@@ -923,6 +974,7 @@ async function poll() {
         fetchJSON('/field_strengths'),       // 10
         fetchJSON('/seismic/waveform'),      // 11
         fetchJSON('/jellyball/prediction'),  // 12
+        fetchJSON('/jellyball/neural'),      // 13
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -943,6 +995,7 @@ async function poll() {
     if (v(10)) updFieldStrengths(v(10));
     if (v(11)) drawSeismogram(v(11));
     if (v(12)) updJellyBall(v(12));
+    if (v(13)) updNeural(v(13));
     // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;
