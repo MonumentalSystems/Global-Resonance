@@ -884,21 +884,23 @@ async def get_seismic_waveform(station: str = "ANMO", network: str = "IU",
                                 channel: str = "BHZ", duration: int = 600):
     """Live seismogram data from IRIS FDSN."""
     now = datetime.now(timezone.utc)
-    start = now - timedelta(seconds=duration)
+    # IRIS data has ~5-30 min latency; offset window back to ensure data exists
+    end = now - timedelta(minutes=5)
+    start = end - timedelta(seconds=duration)
     url = (
         f"https://service.iris.edu/irisws/timeseries/1/query?"
         f"net={network}&sta={station}&loc=00&cha={channel}"
         f"&starttime={start.strftime('%Y-%m-%dT%H:%M:%S')}"
-        f"&endtime={now.strftime('%Y-%m-%dT%H:%M:%S')}"
-        f"&output=ascii&nodata=404"
+        f"&endtime={end.strftime('%Y-%m-%dT%H:%M:%S')}"
+        f"&output=ascii"
     )
     cache_key = f"seismo_{station}_{channel}"
     now_ts = time.time()
-    if cache_key in CACHE and now_ts - CACHE[cache_key]["ts"] < 60:
+    if cache_key in CACHE and now_ts - CACHE[cache_key]["ts"] < 120:
         return CACHE[cache_key]["data"]
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url)
             if resp.status_code == 404:
                 return {"error": "No data available", "station": station}
@@ -906,7 +908,7 @@ async def get_seismic_waveform(station: str = "ANMO", network: str = "IU",
     except Exception as e:
         return {"error": str(e), "station": station}
 
-    # Parse IRIS ASCII: header line starting with TIMESERIES, then data lines
+    # Parse IRIS ASCII: TSPAIR format (timestamp  value) or simple columns
     lines = text.strip().split("\n")
     samples = []
     sample_rate = 20.0
@@ -921,14 +923,19 @@ async def get_seismic_waveform(station: str = "ANMO", network: str = "IU",
                         sample_rate = float(p.split()[0])
                     except Exception:
                         pass
-                if p.startswith("20") and "T" in p:
-                    start_time = p
+                if "20" in p and "T" in p and "-" in p:
+                    start_time = p.strip()
         else:
             try:
                 vals = line.strip().split()
-                for v in vals:
-                    samples.append(int(v))
-            except Exception:
+                # TSPAIR: "2026-04-04T14:00:00.019538  164"
+                if len(vals) == 2 and "T" in vals[0]:
+                    samples.append(int(vals[1]))
+                else:
+                    # Plain integer columns
+                    for v in vals:
+                        samples.append(int(v))
+            except (ValueError, IndexError):
                 pass
 
     # Downsample for frontend (target ~500 points)
