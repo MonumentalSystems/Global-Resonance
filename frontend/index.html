@@ -72,17 +72,17 @@
 
         /* Detector bars */
         .det-row { display: flex; align-items: center; margin-bottom: 2px; gap: 4px; }
-        .det-label { width: 62px; font-size: 8px; color: #778; text-align: right; white-space: nowrap; }
+        .det-label { flex: 0 0 72px; font-size: 8px; color: #778; text-align: right; white-space: nowrap; overflow: visible; }
         .det-bar-bg { flex: 1; height: 9px; background: #111128; border-radius: 2px; overflow: hidden; }
         .det-bar { height: 100%; border-radius: 2px; transition: width 0.6s ease, background 0.6s ease; min-width: 2px; }
-        .det-score { width: 30px; font-size: 8px; color: #889; text-align: right; font-variant-numeric: tabular-nums; }
+        .det-score { flex: 0 0 32px; font-size: 8px; color: #889; text-align: right; font-variant-numeric: tabular-nums; }
         .fused-bar { height: 14px; background: #111128; border-radius: 3px; overflow: hidden; margin: 4px 0; position: relative; }
         .fused-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease, background 0.6s ease; min-width: 2px; }
         .fused-label { position: absolute; right: 4px; top: 1px; font-size: 9px; color: #fff; font-weight: bold; z-index: 1; }
 
         /* Pathway bars */
         .pw-row { display: flex; align-items: center; margin-bottom: 2px; gap: 4px; }
-        .pw-name { width: 62px; font-size: 8px; color: #778; text-align: right; white-space: nowrap; }
+        .pw-name { flex: 0 0 72px; font-size: 8px; color: #778; text-align: right; white-space: nowrap; overflow: visible; }
         .pw-bar-bg { flex: 1; height: 8px; background: #111128; border-radius: 2px; overflow: hidden; }
         .pw-bar { height: 100%; border-radius: 2px; transition: width 0.6s ease; min-width: 2px; }
         .pw-dir { width: 12px; font-size: 10px; text-align: center; }
@@ -219,13 +219,13 @@
             <!-- Detectors -->
             <div class="p" id="detector-panel">
                 <h4>DETECTORS</h4>
-                <div class="det-row"><span class="det-label">Z-SCORE</span><div class="det-bar-bg"><div class="det-bar" id="det-zscore" style="width:0%"></div></div><span class="det-score" id="ds-zscore">--</span></div>
+                <div class="det-row"><span class="det-label">Z-Score</span><div class="det-bar-bg"><div class="det-bar" id="det-zscore" style="width:0%"></div></div><span class="det-score" id="ds-zscore">--</span></div>
                 <div class="det-row"><span class="det-label">CUSUM</span><div class="det-bar-bg"><div class="det-bar" id="det-cusum" style="width:0%"></div></div><span class="det-score" id="ds-cusum">--</span></div>
-                <div class="det-row"><span class="det-label">HARDNESS</span><div class="det-bar-bg"><div class="det-bar" id="det-hardness" style="width:0%"></div></div><span class="det-score" id="ds-hardness">--</span></div>
-                <div class="det-row"><span class="det-label">dF/dt</span><div class="det-bar-bg"><div class="det-bar" id="det-rate" style="width:0%"></div></div><span class="det-score" id="ds-rate">--</span></div>
-                <div class="det-row"><span class="det-label">MULTI-CH</span><div class="det-bar-bg"><div class="det-bar" id="det-multichannel" style="width:0%"></div></div><span class="det-score" id="ds-multichannel">--</span></div>
-                <div class="det-row"><span class="det-label">PROTON</span><div class="det-bar-bg"><div class="det-bar" id="det-proton" style="width:0%"></div></div><span class="det-score" id="ds-proton">--</span></div>
-                <div class="det-row"><span class="det-label">CRITICAL</span><div class="det-bar-bg"><div class="det-bar" id="det-criticality" style="width:0%"></div></div><span class="det-score" id="ds-criticality">--</span></div>
+                <div class="det-row"><span class="det-label">Hard X/Soft</span><div class="det-bar-bg"><div class="det-bar" id="det-hardness" style="width:0%"></div></div><span class="det-score" id="ds-hardness">--</span></div>
+                <div class="det-row"><span class="det-label">dFlux/dt</span><div class="det-bar-bg"><div class="det-bar" id="det-rate" style="width:0%"></div></div><span class="det-score" id="ds-rate">--</span></div>
+                <div class="det-row"><span class="det-label">XR+e Multi</span><div class="det-bar-bg"><div class="det-bar" id="det-multichannel" style="width:0%"></div></div><span class="det-score" id="ds-multichannel">--</span></div>
+                <div class="det-row"><span class="det-label">Proton SEP</span><div class="det-bar-bg"><div class="det-bar" id="det-proton" style="width:0%"></div></div><span class="det-score" id="ds-proton">--</span></div>
+                <div class="det-row"><span class="det-label">Criticality</span><div class="det-bar-bg"><div class="det-bar" id="det-criticality" style="width:0%"></div></div><span class="det-score" id="ds-criticality">--</span></div>
                 <div class="fused-bar"><span class="fused-label" id="fused-label">FUSED: --</span><div class="fused-fill" id="fused-fill" style="width:0%"></div></div>
                 <div class="d">Agreement: <span id="det-agreement">--</span>/7</div>
             </div>

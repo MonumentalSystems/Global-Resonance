@@ -816,28 +816,35 @@ def get_plates():
     ]
 
     def classify_segment(seg):
-        """Assign a name/color to a segment based on its centroid."""
+        """Assign a name/color to a segment based on nearest region centroid."""
         lons = [p[0] for p in seg]
         lats = [p[1] for p in seg]
         clon = sum(lons) / len(lons)
         clat = sum(lats) / len(lats)
 
-        best = ("Unknown Boundary", "#445566", "unknown")
-        best_dist = 1e9
+        # First pass: check if centroid is inside any bounding box
         for name, color, lo0, la0, lo1, la1, btype in REGIONS:
-            # Handle wrap-around for Pacific
             if lo0 > lo1:
                 in_lon = clon > lo0 or clon < lo1
             else:
                 in_lon = lo0 <= clon <= lo1
-            in_lat = la0 <= clat <= la1
-            if in_lon and in_lat:
-                cx = (lo0 + lo1) / 2 if lo0 < lo1 else ((lo0 + lo1 + 360) / 2) % 360 - 180
-                cy = (la0 + la1) / 2
-                d = math.sqrt((clon - cx) ** 2 + (clat - cy) ** 2)
-                if d < best_dist:
-                    best_dist = d
-                    best = (name, color, btype)
+            if in_lon and la0 <= clat <= la1:
+                return (name, color, btype)
+
+        # Second pass: nearest region centroid (no segment left behind)
+        best = ("Other Boundary", "#556677", "unknown")
+        best_dist = 1e9
+        for name, color, lo0, la0, lo1, la1, btype in REGIONS:
+            cx = (lo0 + lo1) / 2 if lo0 < lo1 else ((lo0 + lo1 + 360) / 2) % 360 - 180
+            cy = (la0 + la1) / 2
+            # Longitude distance handling wrap-around
+            dlon = abs(clon - cx)
+            if dlon > 180:
+                dlon = 360 - dlon
+            d = math.sqrt(dlon ** 2 + (clat - cy) ** 2)
+            if d < best_dist:
+                best_dist = d
+                best = (name, color, btype)
         return best
 
     features = []
