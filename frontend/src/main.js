@@ -852,6 +852,39 @@ function updTEC(d) {
     }
 }
 
+function updPrecip(d) {
+    if (!d) return;
+    const el = document.getElementById('precip-metric');
+    const det = document.getElementById('precip-detail');
+    if (el) {
+        el.textContent = `${d.global_precip_72h || 0} mm`;
+        el.className = 'm ' + (d.global_precip_72h > 100 ? 'a' : 'q');
+    }
+    if (det) {
+        const thunder = d.global_thunder_hours || 0;
+        det.textContent = `${d.n_stations || 0} sites | ${thunder} storm-hrs`;
+    }
+}
+
+function updLightning(d) {
+    if (!d) return;
+    const el = document.getElementById('lightning-metric');
+    const det = document.getElementById('lightning-detail');
+    if (el) {
+        const clim = d.climatology;
+        if (clim) {
+            el.textContent = clim.month;
+            el.style.color = '#ffaa44';
+        }
+        const rt = d.realtime_thunder_hours || 0;
+        if (rt > 0 && el) el.textContent += ` (${rt}h)`;
+    }
+    if (det && d.climatology?.hotspots) {
+        const top = d.climatology.hotspots.sort((a, b) => b.mean_density - a.mean_density)[0];
+        det.textContent = top ? `peak: ${top.name}` : 'WWLLN climatology';
+    }
+}
+
 function updDst(data) {
     if (!data) return;
     const el = document.getElementById('dst-metric'), st = document.getElementById('st-dst');
@@ -1053,6 +1086,8 @@ async function poll() {
         fetchJSON('/jellyball/neural'),      // 13
         fetchJSON('/cosmic_rays_global'),    // 14
         fetchJSON('/tec'),                   // 15
+        fetchJSON('/precipitation'),         // 16
+        fetchJSON('/lightning'),             // 17
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -1076,6 +1111,8 @@ async function poll() {
     if (v(13)) updNeural(v(13));
     if (v(14)) { updGlobalCR(v(14)); if (v(14).global_mean != null) updateCRRate(v(14).global_mean); }
     if (v(15)) updTEC(v(15));
+    if (v(16)) updPrecip(v(16));
+    if (v(17)) updLightning(v(17));
     // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;

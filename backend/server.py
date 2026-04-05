@@ -1015,6 +1015,145 @@ async def get_enlil():
     return {"available": False}
 
 
+@app.get("/api/precipitation")
+async def get_precipitation():
+    """
+    Global precipitation from Open-Meteo (free, no API key).
+
+    Returns 72h precipitation history for key seismic/atmospheric zones.
+    Precipitation is relevant because:
+    - Rainfall increases pore pressure in shallow faults
+    - Heavy rain correlates with shallow landslide-triggered seismicity
+    - The global electric circuit couples thunderstorms -> ionosphere -> Jz
+    """
+    stations = [
+        {"name": "Indonesia (Molucca)", "lat": 1.0, "lon": 125.0},
+        {"name": "Japan (Kanto)", "lat": 36.0, "lon": 140.0},
+        {"name": "Chile (Santiago)", "lat": -33.4, "lon": -70.6},
+        {"name": "California", "lat": 34.0, "lon": -118.2},
+        {"name": "Vanuatu", "lat": -17.7, "lon": 168.3},
+        {"name": "Turkey", "lat": 39.9, "lon": 32.9},
+        {"name": "Central US (Tornado)", "lat": 35.0, "lon": -97.0},
+        {"name": "India (Monsoon)", "lat": 20.0, "lon": 77.0},
+    ]
+
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for st in stations:
+                cache_key = f"precip_{st['name']}"
+                if cache_key in CACHE and time.time() - CACHE[cache_key]["ts"] < 600:
+                    results.append(CACHE[cache_key]["data"])
+                    continue
+                try:
+                    url = (f"https://api.open-meteo.com/v1/forecast?"
+                           f"latitude={st['lat']}&longitude={st['lon']}"
+                           f"&hourly=precipitation,weathercode"
+                           f"&past_days=3&forecast_days=0")
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        d = resp.json()
+                        hourly = d.get("hourly", {})
+                        precip = hourly.get("precipitation", [])
+                        codes = hourly.get("weathercode", [])
+                        total_72h = sum(p for p in precip if p) if precip else 0
+                        current = precip[-1] if precip else 0
+                        # Thunderstorm detection: WMO codes 95-99
+                        thunder_hours = sum(1 for c in codes if c and c >= 95)
+                        entry = {
+                            **st,
+                            "total_72h_mm": round(total_72h, 1),
+                            "current_mm": current,
+                            "thunder_hours": thunder_hours,
+                            "n_hours": len(precip),
+                        }
+                        results.append(entry)
+                        CACHE[cache_key] = {"data": entry, "ts": time.time()}
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Global summary
+    total_global = sum(r.get("total_72h_mm", 0) for r in results)
+    thunder_total = sum(r.get("thunder_hours", 0) for r in results)
+
+    return {
+        "stations": results,
+        "global_precip_72h": round(total_global, 1),
+        "global_thunder_hours": thunder_total,
+        "n_stations": len(results),
+    }
+
+
+@app.get("/api/lightning")
+def get_lightning():
+    """
+    Lightning activity from WWLLN climatology + thunderstorm detection.
+
+    Uses WWLLN 2010-2022 monthly climatology for baseline comparison,
+    plus Open-Meteo thunderstorm codes for real-time storm detection.
+
+    Lightning is the primary driver of Schumann resonances:
+    ~2000 active thunderstorms globally at any time drive the cavity.
+    """
+    # Load WWLLN monthly climatology for current month
+    lightning_file = DATA_DIR / "lightning" / "wglc_climatology_30m_monthly.nc"
+    result = {"source": "WWLLN climatology + Open-Meteo thunderstorm codes"}
+
+    if lightning_file.exists():
+        try:
+            import xarray as xr
+            ds = xr.open_dataset(str(lightning_file))
+            now = datetime.now(timezone.utc)
+            month = now.month
+
+            # Get climatological flash density for this month
+            if "time" in ds.dims:
+                month_data = ds["density"].isel(time=month - 1)
+            else:
+                month_data = ds["density"]
+
+            # Global statistics
+            total = float(month_data.sum())
+            mean_density = float(month_data.mean())
+
+            # Regional hotspots
+            regions = [
+                ("Central Africa", -5, 5, 15, 35),
+                ("Amazon", -10, 5, -70, -45),
+                ("Maritime Continent", -10, 10, 95, 140),
+                ("Central US", 30, 40, -100, -85),
+                ("India", 10, 30, 70, 90),
+            ]
+            hotspots = []
+            for name, la1, la2, lo1, lo2 in regions:
+                regional = month_data.sel(lat=slice(la1, la2), lon=slice(lo1, lo2))
+                hotspots.append({
+                    "name": name,
+                    "mean_density": round(float(regional.mean()), 4),
+                })
+
+            result["climatology"] = {
+                "month": now.strftime("%B"),
+                "global_total": round(total, 0),
+                "global_mean_density": round(mean_density, 6),
+                "hotspots": hotspots,
+            }
+            ds.close()
+        except Exception as e:
+            result["climatology_error"] = str(e)
+
+    # Real-time thunderstorm count from cached precipitation data
+    thunder_total = 0
+    for key, val in CACHE.items():
+        if key.startswith("precip_") and "data" in val:
+            thunder_total += val["data"].get("thunder_hours", 0)
+    result["realtime_thunder_hours"] = thunder_total
+
+    return result
+
+
 @app.get("/api/paleomag")
 def get_paleomag():
     """Bronze Age paleomagnetic field data from pfm9k.2."""
