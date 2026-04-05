@@ -12,7 +12,7 @@ const POLL = 30_000; // 30s poll
 // ===== Renderer =====
 const box = document.getElementById('canvas-container');
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x050510);
+scene.background = new THREE.Color(0x030308);
 const camera = new THREE.PerspectiveCamera(45, box.clientWidth / box.clientHeight, 0.01, 100);
 camera.position.set(0, 1.2, 2.8);
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -30,9 +30,9 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(
     new THREE.Vector2(box.clientWidth, box.clientHeight),
-    0.6,   // strength
-    0.4,   // radius
-    0.85   // threshold
+    1.2,   // strength — cinematic glow
+    0.6,   // radius — wide bloom halo
+    0.7    // threshold — more elements glow
 );
 composer.addPass(bloomPass);
 
@@ -42,12 +42,26 @@ const sunLight = new THREE.DirectionalLight(0xffffff, 1.4);
 sunLight.position.set(5, 2, 5);
 scene.add(sunLight);
 
-// Stars
+// Stars — varied sizes and colors
+const STAR_COUNT = 6000;
 const starGeo = new THREE.BufferGeometry();
-const sv = new Float32Array(4000 * 3);
-for (let i = 0; i < sv.length; i++) sv[i] = (Math.random() - 0.5) * 60;
+const sv = new Float32Array(STAR_COUNT * 3);
+const starColors = new Float32Array(STAR_COUNT * 3);
+const starSizes = new Float32Array(STAR_COUNT);
+for (let i = 0; i < STAR_COUNT; i++) {
+    sv[i * 3] = (Math.random() - 0.5) * 60;
+    sv[i * 3 + 1] = (Math.random() - 0.5) * 60;
+    sv[i * 3 + 2] = (Math.random() - 0.5) * 60;
+    // Color: mostly blue-white, occasional warm
+    const temp = Math.random();
+    starColors[i * 3] = temp > 0.9 ? 1.0 : 0.6 + Math.random() * 0.3;
+    starColors[i * 3 + 1] = temp > 0.95 ? 0.5 : 0.7 + Math.random() * 0.3;
+    starColors[i * 3 + 2] = temp > 0.9 ? 0.4 : 0.8 + Math.random() * 0.2;
+    starSizes[i] = 0.008 + Math.random() * 0.02 + (Math.random() > 0.98 ? 0.04 : 0);
+}
 starGeo.setAttribute('position', new THREE.BufferAttribute(sv, 3));
-scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x667788, size: 0.015 })));
+starGeo.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ vertexColors: true, size: 0.015, sizeAttenuation: true, transparent: true, opacity: 0.9 })));
 
 // ===== Globe =====
 const earthGeo = new THREE.SphereGeometry(R, 128, 128);
@@ -73,13 +87,23 @@ tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg',
     undefined, e => console.warn('Night texture failed:', e)
 );
 
-// Atmosphere
+// Atmosphere — dual-layer glow
 const atmosMat = new THREE.ShaderMaterial({
-    vertexShader: `varying vec3 vNormal; void main() { vNormal = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `varying vec3 vNormal; void main() { float intensity = pow(0.65 - dot(vNormal, vec3(0,0,1)), 2.5); gl_FragColor = vec4(0.3, 0.6, 1.0, intensity * 0.4); }`,
-    transparent: true, side: THREE.BackSide, depthWrite: false,
+    vertexShader: `varying vec3 vNormal; varying vec3 vPos; void main() { vNormal = normalize(normalMatrix * normal); vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+        varying vec3 vNormal; varying vec3 vPos;
+        void main() {
+            float intensity = pow(0.65 - dot(vNormal, vec3(0,0,1)), 2.5);
+            // Blue atmosphere with cyan rim
+            vec3 col = mix(vec3(0.15, 0.4, 0.9), vec3(0.3, 0.9, 1.0), intensity);
+            gl_FragColor = vec4(col, intensity * 0.35);
+        }`,
+    transparent: true, side: THREE.BackSide, depthWrite: false, blending: THREE.AdditiveBlending,
 });
 scene.add(new THREE.Mesh(new THREE.SphereGeometry(R * 1.025, 64, 64), atmosMat));
+// Outer haze — very faint wide glow
+const hazeMat = new THREE.MeshBasicMaterial({ color: 0x2266cc, transparent: true, opacity: 0.015, side: THREE.BackSide, depthWrite: false });
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(R * 1.08, 32, 32), hazeMat));
 
 // ===== Coordinates =====
 function ll2v(lat, lon, r = R * 1.001) {
@@ -1615,6 +1639,182 @@ function animateComet() {
 }
 buildComet();
 
+// ============================================================
+// CINEMATIC EFFECTS
+// ============================================================
+
+// --- COSMIC RAY STREAKS ---
+// High-energy particles from deep space, deflected by magnetosphere
+const CR_COUNT = 15;
+const crPositions = new Float32Array(CR_COUNT * 6); // start + end per ray
+const crColors = new Float32Array(CR_COUNT * 6);
+const crLifetimes = new Float32Array(CR_COUNT);
+const crGeo = new THREE.BufferGeometry();
+crGeo.setAttribute('position', new THREE.BufferAttribute(crPositions, 3));
+crGeo.setAttribute('color', new THREE.BufferAttribute(crColors, 3));
+const crMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false });
+const crLines = new THREE.LineSegments(crGeo, crMat);
+scene.add(crLines);
+
+function spawnCosmicRay(i) {
+    // Random direction from deep space
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.random() * Math.PI;
+    const dist = 4 + Math.random() * 3;
+    const x = dist * Math.sin(phi) * Math.cos(theta);
+    const y = dist * Math.cos(phi);
+    const z = dist * Math.sin(phi) * Math.sin(theta);
+    // Trail toward Earth but deflect near magnetosphere
+    const tx = x * 0.1 + (Math.random() - 0.5) * 0.5;
+    const ty = y * 0.1 + (Math.random() - 0.5) * 0.5;
+    const tz = z * 0.1 + (Math.random() - 0.5) * 0.5;
+    const ix = i * 6;
+    crPositions[ix] = x; crPositions[ix+1] = y; crPositions[ix+2] = z;
+    crPositions[ix+3] = tx; crPositions[ix+4] = ty; crPositions[ix+5] = tz;
+    // Color: bright white-blue streak
+    const bright = 0.7 + Math.random() * 0.3;
+    crColors[ix] = bright * 0.6; crColors[ix+1] = bright * 0.8; crColors[ix+2] = bright;
+    crColors[ix+3] = 0; crColors[ix+4] = 0; crColors[ix+5] = 0; // fade to black
+    crLifetimes[i] = 30 + Math.random() * 60; // frames
+}
+for (let i = 0; i < CR_COUNT; i++) { spawnCosmicRay(i); crLifetimes[i] = Math.random() * 60; }
+
+function animateCosmicRays() {
+    for (let i = 0; i < CR_COUNT; i++) {
+        crLifetimes[i]--;
+        if (crLifetimes[i] <= 0) spawnCosmicRay(i);
+        // Fade based on lifetime
+        const fade = Math.max(0, Math.min(1, crLifetimes[i] / 20));
+        const ix = i * 6;
+        crColors[ix] *= 0.97; crColors[ix+1] *= 0.97; crColors[ix+2] *= 0.97;
+        // Extend trail
+        crPositions[ix+3] += (crPositions[ix+3] - crPositions[ix]) * 0.02;
+        crPositions[ix+4] += (crPositions[ix+4] - crPositions[ix+1]) * 0.02;
+        crPositions[ix+5] += (crPositions[ix+5] - crPositions[ix+2]) * 0.02;
+    }
+    crGeo.attributes.position.needsUpdate = true;
+    crGeo.attributes.color.needsUpdate = true;
+}
+
+// --- TELLURIC CURRENT GRID ---
+// Glowing grid lines on Earth's surface showing current flow
+const telluricGroup = new THREE.Group();
+scene.add(telluricGroup);
+const TELLURIC_LINES = 24;
+const telluricMat = new THREE.LineBasicMaterial({ color: 0xff8844, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending, depthWrite: false });
+
+// Latitude lines (telluric current paths)
+for (let i = 0; i < 12; i++) {
+    const lat = -75 + i * 15;
+    const pts = [];
+    for (let j = 0; j <= 72; j++) pts.push(ll2v(lat, j * 5 - 180, R * 1.003));
+    telluricGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), telluricMat.clone()));
+}
+// Longitude lines
+for (let i = 0; i < 12; i++) {
+    const lon = i * 30 - 180;
+    const pts = [];
+    for (let j = 0; j <= 36; j++) pts.push(ll2v(-90 + j * 5, lon, R * 1.003));
+    telluricGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), telluricMat.clone()));
+}
+rotatingLayers.add('telluric-grid');
+layerGroups['telluric-grid'] = telluricGroup;
+
+function animateTelluric(frame) {
+    // Pulse telluric grid with Schumann-like frequency
+    // 7.83 Hz scaled to visual: ~8 pulses per 60 frames at 60fps
+    const schumannPulse = 0.5 + 0.5 * Math.sin(frame * 0.13); // ~7.8 cycles per 60 frames
+    const baseOpacity = 0.04 + stormLevel * 0.08;
+    telluricGroup.children.forEach((line, idx) => {
+        const phase = idx * 0.3; // offset each line
+        line.material.opacity = baseOpacity * (0.6 + 0.4 * Math.sin(frame * 0.13 + phase));
+        // Color shifts: orange during quiet, red during storms
+        const r = 1.0;
+        const g = 0.5 - stormLevel * 0.3;
+        const b = 0.2 - stormLevel * 0.15;
+        line.material.color.setRGB(r, Math.max(0, g), Math.max(0, b));
+    });
+}
+
+// --- SCHUMANN CAVITY PULSE ---
+// Translucent sphere that breathes at ~7.83 Hz (scaled)
+const schumannGeo = new THREE.SphereGeometry(R * 1.015, 48, 48);
+const schumannMat = new THREE.MeshBasicMaterial({
+    color: 0x44ffaa, transparent: true, opacity: 0.02,
+    side: THREE.FrontSide, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const schumannShell = new THREE.Mesh(schumannGeo, schumannMat);
+scene.add(schumannShell);
+
+function animateSchumann(frame) {
+    // Breathe at Schumann fundamental
+    const pulse = Math.sin(frame * 0.13) * 0.5 + 0.5;
+    schumannShell.material.opacity = 0.01 + pulse * 0.03 + stormLevel * 0.02;
+    schumannShell.scale.setScalar(1 + pulse * 0.003);
+    // Color: green during quiet, shifts cyan during storms
+    const g = 1.0 - stormLevel * 0.3;
+    const b = 0.7 + stormLevel * 0.3;
+    schumannShell.material.color.setRGB(0.3, g, b);
+}
+
+// --- ENERGY FLOW ALONG FIELD LINES ---
+// Small bright dots that travel along the dipole field lines
+const FLOW_DOTS = 40;
+const flowPositions = new Float32Array(FLOW_DOTS * 3);
+const flowColors = new Float32Array(FLOW_DOTS * 3);
+const flowGeo = new THREE.BufferGeometry();
+flowGeo.setAttribute('position', new THREE.BufferAttribute(flowPositions, 3));
+flowGeo.setAttribute('color', new THREE.BufferAttribute(flowColors, 3));
+const flowPts = new THREE.Points(flowGeo, new THREE.PointsMaterial({
+    size: 0.02, vertexColors: true, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+}));
+scene.add(flowPts);
+
+// Each dot has: phi (which field line), theta_progress (where along it), speed
+const flowState = [];
+for (let i = 0; i < FLOW_DOTS; i++) {
+    flowState.push({
+        phi: Math.random() * Math.PI * 2,
+        L: 2.0 + Math.floor(Math.random() * 4) * 0.7,
+        theta: Math.random() * Math.PI,
+        speed: 0.02 + Math.random() * 0.03,
+        dir: Math.random() > 0.5 ? 1 : -1,
+    });
+}
+
+function animateFieldFlow(frame) {
+    const S = 0.5;
+    for (let i = 0; i < FLOW_DOTS; i++) {
+        const f = flowState[i];
+        f.theta += f.speed * f.dir;
+        if (f.theta > Math.PI || f.theta < 0) {
+            f.dir *= -1;
+            f.theta = Math.max(0, Math.min(Math.PI, f.theta));
+        }
+
+        const r = f.L * Math.sin(f.theta) * Math.sin(f.theta);
+        let x = r * Math.sin(f.theta) * Math.cos(f.phi);
+        let y = r * Math.cos(f.theta);
+        let z = r * Math.sin(f.theta) * Math.sin(f.phi);
+        if (x > 0) x *= magnetoCompression * 0.7;
+        if (x < 0) x *= 1 + (1 - magnetoCompression) * 0.8;
+
+        const ix = i * 3;
+        flowPositions[ix] = x * S;
+        flowPositions[ix + 1] = y * S;
+        flowPositions[ix + 2] = z * S;
+
+        // Color: cyan near equator, green near poles
+        const equatorDist = Math.abs(f.theta - Math.PI / 2) / (Math.PI / 2);
+        flowColors[ix] = 0.2 + equatorDist * 0.3;
+        flowColors[ix + 1] = 0.8 + equatorDist * 0.2;
+        flowColors[ix + 2] = 1.0 - equatorDist * 0.3;
+    }
+    flowGeo.attributes.position.needsUpdate = true;
+    flowGeo.attributes.color.needsUpdate = true;
+}
+
 // ===== ANIMATE =====
 let frame = 0;
 function animate() {
@@ -1623,21 +1823,53 @@ function animate() {
     frame++;
     const rot = 0.00015;
     earth.rotation.y += rot; wireframe.rotation.y += rot;
+    schumannShell.rotation.y += rot;
+    telluricGroup.rotation.y += rot;
     for (const name of rotatingLayers) { if (layerGroups[name]) layerGroups[name].rotation.y += rot; }
+
+    // Earthquake wave propagation
     if (frame % 30 === 0 && eqWaves.length > 0) animateWaves();
+
+    // Subsolar pulse
     const ss = layerGroups['subsolar']?.getObjectByName('subsolar-pulse');
-    if (ss) ss.scale.setScalar(1 + 0.2 * Math.sin(frame * 0.04));
+    if (ss) ss.scale.setScalar(1 + 0.3 * Math.sin(frame * 0.05));
+
+    // Solar wind particles
     animateSolarWind();
+
+    // Comet
     animateComet();
+
+    // Reconnection jets
     if (currentBz < -3) animateReconnection();
-    // Pulse aurora
-    if (stormLevel > 0.1) {
+
+    // Aurora ovals — multi-frequency pulse
+    if (stormLevel > 0.05) {
         const ml = layerGroups['magnetosphere'];
         if (ml) ml.children.forEach(c => {
-            if (c.name?.includes('aurora-'))
-                c.material.opacity = (0.15 + stormLevel * 0.5) * (0.8 + 0.2 * Math.sin(frame * 0.03));
+            if (c.name?.includes('aurora-')) {
+                // Pulse with multiple frequencies (substorm-like)
+                const base = 0.1 + stormLevel * 0.6;
+                const pulse1 = Math.sin(frame * 0.03) * 0.15;       // slow breathing
+                const pulse2 = Math.sin(frame * 0.11) * 0.08;       // faster flicker
+                const pulse3 = Math.sin(frame * 0.31) * 0.04;       // rapid shimmer
+                c.material.opacity = Math.max(0, base + pulse1 + pulse2 + pulse3);
+            }
         });
     }
+
+    // Cosmic ray streaks
+    animateCosmicRays();
+
+    // Telluric current grid pulse
+    animateTelluric(frame);
+
+    // Schumann cavity breathing
+    animateSchumann(frame);
+
+    // Energy flow along field lines
+    animateFieldFlow(frame);
+
     composer.render();
 }
 animate();
