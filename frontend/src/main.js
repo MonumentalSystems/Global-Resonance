@@ -887,6 +887,38 @@ function updLightning(d) {
     }
 }
 
+function updPorePressure(d) {
+    if (!d?.stations) return;
+    const container = document.getElementById('pore-bars');
+    if (!container) return;
+
+    // Show each station's 100m depth pore pressure
+    container.innerHTML = d.stations.map(st => {
+        const pp = st.depth_profile?.['100m'];
+        if (!pp) return '';
+        const pct = pp.pct_tectonic;
+        const barW = Math.min(100, pct * 3000); // scale up since values are tiny
+        const color = pct > 0.01 ? '#ff4444' : pct > 0.005 ? '#ffaa44' : '#44aaff';
+        const name = st.name.split('(')[0].trim().substring(0, 12);
+        return `<div class="det-row">
+            <span class="det-label">${name}</span>
+            <div class="det-bar-bg"><div class="det-bar" style="width:${barW}%;background:${color}"></div></div>
+            <span class="det-score" style="color:${color}">${pp.total_pa.toFixed(0)}</span>
+        </div>`;
+    }).join('');
+
+    // Tidal and Jz indicators
+    const tidalEl = document.getElementById('pp-tidal');
+    if (tidalEl && d.inputs) {
+        tidalEl.textContent = d.inputs.tidal_force > 0 ? 'spring' : 'neap';
+        tidalEl.style.color = Math.abs(d.inputs.tidal_force) > 0.7 ? '#88aaff' : '#556';
+    }
+    const jzEl = document.getElementById('pp-jz');
+    if (jzEl && d.inputs) {
+        jzEl.textContent = d.inputs.telluric_j_mA_km?.toFixed(1) || '--';
+    }
+}
+
 // --- WEATHER INDICATORS ON GLOBE ---
 function renderWeatherMarkers(precipData) {
     clearLayer('weather');
@@ -1193,6 +1225,7 @@ async function poll() {
         fetchJSON('/tec'),                   // 15
         fetchJSON('/precipitation'),         // 16
         fetchJSON('/lightning'),             // 17
+        fetchJSON('/pore_pressure'),         // 18
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -1218,6 +1251,7 @@ async function poll() {
     if (v(15)) updTEC(v(15));
     if (v(16)) updPrecip(v(16));
     if (v(17)) updLightning(v(17));
+    if (v(18)) updPorePressure(v(18));
     // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;

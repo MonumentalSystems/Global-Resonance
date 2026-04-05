@@ -1154,6 +1154,121 @@ def get_lightning():
     return result
 
 
+@app.get("/api/pore_pressure")
+def get_pore_pressure():
+    """
+    Pore pressure model: rainfall + telluric + tidal -> effective stress.
+
+    Computes pore pressure change at fault depths from:
+    1. Rainfall infiltration (1D diffusion from cached precipitation)
+    2. Telluric current Jz (from Kp/Bz via global electric circuit)
+    3. Lunar tidal body force (fortnightly M2)
+
+    Output: delta_sigma_eff / sigma_tectonic at each monitoring station.
+    """
+    import math as m
+
+    rho_w = 1000  # kg/m3
+    g = 9.81
+    sigma_tectonic = 1e6  # 1 MPa typical
+
+    def erfc_approx(x):
+        if x > 5: return 0
+        if x < -5: return 2
+        t = 1 / (1 + 0.3275911 * abs(x))
+        poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
+        result = poly * m.exp(-x * x)
+        return result if x >= 0 else 2 - result
+
+    # Get current inputs
+    kp = 2.0
+    kp_data = CACHE.get("kp", {}).get("data")
+    if kp_data:
+        for row in reversed(kp_data if isinstance(kp_data, list) else []):
+            if isinstance(row, (list, tuple)) and len(row) >= 2:
+                try: kp = float(row[1]); break
+                except: pass
+
+    bz = 0.0
+    sw_data = CACHE.get("sw_mag", {}).get("data")
+    if sw_data:
+        for row in reversed(sw_data[1:]):
+            v = row[3] if len(row) > 3 else None
+            if v not in (None, "", "null"):
+                try: bz = float(v); break
+                except: pass
+
+    # Lunar tidal force
+    now = datetime.now(timezone.utc)
+    ref = datetime(2000, 1, 6, tzinfo=timezone.utc)
+    days_since = (now - ref).total_seconds() / 86400
+    lunar_phase = (days_since % 29.53059) / 29.53059
+    tidal_force = m.cos(2 * m.pi * lunar_phase)  # +1 at new/full, -1 at quarters
+    tidal_stress_pa = 1000 * abs(tidal_force)  # ~1kPa max body tide stress
+
+    # Telluric Jz contribution (from Kp/Bz)
+    telluric_j = 2.0 * m.exp(kp * 0.4)  # mA/km
+    if bz < -10: telluric_j *= 1.5
+    # Lorentz force on pore fluid: F = J x B, integrated over depth
+    B_surface = 50e-6  # T
+    telluric_pressure_pa = telluric_j * 1e-3 * B_surface * 10000  # rough integral over 10km
+
+    stations = []
+    depths = [10, 50, 100, 500, 1000, 5000]  # meters
+    D_default = 0.1  # fractured rock
+
+    for key, val in CACHE.items():
+        if not key.startswith("precip_") or "data" not in val:
+            continue
+        st = val["data"]
+        rain_mm = st.get("total_72h_mm", 0)
+        rain_m = rain_mm / 1000
+        P0_rain = rho_w * g * rain_m  # surface head from rain
+        t_sec = 72 * 3600  # 72h
+
+        depth_profile = {}
+        for depth in depths:
+            # Rain pore pressure at depth
+            arg = depth / m.sqrt(4 * D_default * t_sec) if t_sec > 0 else 999
+            p_rain = P0_rain * erfc_approx(arg)
+            # Total pore pressure change
+            p_total = p_rain + telluric_pressure_pa + tidal_stress_pa
+            # Fraction of tectonic stress
+            frac = p_total / sigma_tectonic
+
+            depth_label = f"{depth}m" if depth < 1000 else f"{depth // 1000}km"
+            depth_profile[depth_label] = {
+                "rain_pa": round(p_rain, 2),
+                "telluric_pa": round(telluric_pressure_pa, 2),
+                "tidal_pa": round(tidal_stress_pa, 2),
+                "total_pa": round(p_total, 2),
+                "pct_tectonic": round(frac * 100, 5),
+            }
+
+        stations.append({
+            "name": st.get("name", "?"),
+            "lat": st.get("lat"), "lon": st.get("lon"),
+            "rain_mm_72h": rain_mm,
+            "depth_profile": depth_profile,
+        })
+
+    return {
+        "stations": stations,
+        "inputs": {
+            "kp": round(kp, 2),
+            "bz": round(bz, 1),
+            "lunar_phase": round(lunar_phase, 3),
+            "tidal_force": round(tidal_force, 3),
+            "telluric_j_mA_km": round(telluric_j, 2),
+        },
+        "model": {
+            "diffusivity_m2s": D_default,
+            "surface_B_uT": 50,
+            "tectonic_stress_MPa": 1,
+        },
+    }
+
+
 @app.get("/api/paleomag")
 def get_paleomag():
     """Bronze Age paleomagnetic field data from pfm9k.2."""
