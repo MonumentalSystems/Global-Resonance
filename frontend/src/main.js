@@ -864,6 +864,8 @@ function updPrecip(d) {
         const thunder = d.global_thunder_hours || 0;
         det.textContent = `${d.n_stations || 0} sites | ${thunder} storm-hrs`;
     }
+    // Render precipitation + thunderstorm markers on globe
+    renderWeatherMarkers(d);
 }
 
 function updLightning(d) {
@@ -883,6 +885,91 @@ function updLightning(d) {
         const top = d.climatology.hotspots.sort((a, b) => b.mean_density - a.mean_density)[0];
         det.textContent = top ? `peak: ${top.name}` : 'WWLLN climatology';
     }
+}
+
+// --- WEATHER INDICATORS ON GLOBE ---
+function renderWeatherMarkers(precipData) {
+    clearLayer('weather');
+    if (!precipData?.stations) return;
+    const layer = getLayer('weather');
+
+    for (const st of precipData.stations) {
+        const pos = ll2v(st.lat, st.lon, R * 1.012);
+        const isThunder = st.thunder_hours > 0;
+        const hasRain = st.total_72h_mm > 5;
+
+        if (!hasRain && !isThunder) continue;
+
+        // Rain: blue droplet column, height = precipitation amount
+        if (hasRain) {
+            const rainHeight = Math.min(0.12, st.total_72h_mm / 300);
+            const topPos = ll2v(st.lat, st.lon, R * 1.012 + rainHeight);
+            const rainGeo = new THREE.BufferGeometry().setFromPoints([pos, topPos]);
+            const rainMat = new THREE.LineBasicMaterial({
+                color: 0x4488ff, transparent: true,
+                opacity: Math.min(0.7, 0.2 + st.total_72h_mm / 100),
+                blending: THREE.AdditiveBlending, depthWrite: false,
+            });
+            const line = new THREE.Line(rainGeo, rainMat);
+            line.userData = { type: 'precip', ...st };
+            layer.add(line);
+
+            // Small glow at base
+            const baseGeo = new THREE.SphereGeometry(0.006, 6, 6);
+            const baseMat = new THREE.MeshBasicMaterial({
+                color: 0x4488ff, transparent: true, opacity: 0.4, depthWrite: false,
+            });
+            const base = new THREE.Mesh(baseGeo, baseMat);
+            base.position.copy(pos);
+            layer.add(base);
+        }
+
+        // Thunderstorm: yellow-orange flash marker
+        if (isThunder) {
+            // Lightning bolt (small zig-zag line)
+            const boltBase = ll2v(st.lat, st.lon, R * 1.015);
+            const boltTop = ll2v(st.lat, st.lon, R * 1.035 + st.thunder_hours * 0.003);
+            const boltMid1 = boltBase.clone().lerp(boltTop, 0.33);
+            boltMid1.x += 0.008; boltMid1.z += 0.005;
+            const boltMid2 = boltBase.clone().lerp(boltTop, 0.66);
+            boltMid2.x -= 0.006; boltMid2.z -= 0.004;
+            const boltGeo = new THREE.BufferGeometry().setFromPoints([boltBase, boltMid1, boltMid2, boltTop]);
+            const boltMat = new THREE.LineBasicMaterial({
+                color: 0xffcc44, transparent: true, opacity: 0.8,
+                blending: THREE.AdditiveBlending, depthWrite: false,
+            });
+            const bolt = new THREE.Line(boltGeo, boltMat);
+            bolt.name = 'thunder-bolt';
+            bolt.userData = { type: 'thunder', ...st };
+            layer.add(bolt);
+
+            // Glow halo
+            const glowGeo = new THREE.SphereGeometry(0.01 + st.thunder_hours * 0.002, 8, 8);
+            const glowMat = new THREE.MeshBasicMaterial({
+                color: 0xffaa22, transparent: true, opacity: 0.15,
+                depthWrite: false, blending: THREE.AdditiveBlending,
+            });
+            const glow = new THREE.Mesh(glowGeo, glowMat);
+            glow.position.copy(ll2v(st.lat, st.lon, R * 1.02));
+            glow.name = 'thunder-glow';
+            layer.add(glow);
+        }
+    }
+}
+
+// Animate thunder flicker
+function animateWeather(frame) {
+    const layer = layerGroups['weather'];
+    if (!layer) return;
+    layer.children.forEach(c => {
+        if (c.name === 'thunder-bolt') {
+            // Random flicker
+            c.material.opacity = 0.3 + 0.5 * (Math.sin(frame * 0.5 + Math.random() * 10) > 0.3 ? 1 : 0);
+        }
+        if (c.name === 'thunder-glow') {
+            c.material.opacity = 0.08 + 0.12 * Math.sin(frame * 0.15 + c.position.x * 10);
+        }
+    });
 }
 
 function updDst(data) {
@@ -942,6 +1029,24 @@ box.addEventListener('mousemove', e => {
         if (hit) {
             const p = hit.object.userData;
             tip.innerHTML = `<b style="color:#4488ff">${p.name}</b><br><span style="color:#889">${p.boundary_type}</span>`;
+            tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
+            box.style.cursor = 'pointer';
+            return;
+        }
+    }
+
+    // Check weather markers
+    const wxLayer = layerGroups['weather'];
+    if (wxLayer?.visible) {
+        const hits = ray.intersectObjects(wxLayer.children);
+        const hit = hits.find(h => h.object.userData?.type === 'precip' || h.object.userData?.type === 'thunder');
+        if (hit) {
+            const w = hit.object.userData;
+            if (w.type === 'thunder') {
+                tip.innerHTML = `<b style="color:#ffcc44">${w.name}</b><br>${w.thunder_hours}h thunderstorm<br>${w.total_72h_mm}mm rain (72h)`;
+            } else {
+                tip.innerHTML = `<b style="color:#4488ff">${w.name}</b><br>${w.total_72h_mm}mm rain (72h)<br>${w.current_mm}mm/hr now`;
+            }
             tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
             box.style.cursor = 'pointer';
             return;
@@ -1958,6 +2063,9 @@ function animate() {
 
     // Field-aligned currents (Kp-driven)
     animateFAC(frame);
+
+    // Weather markers (thunder flicker)
+    animateWeather(frame);
 
     composer.render();
 }
