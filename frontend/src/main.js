@@ -1074,7 +1074,7 @@ async function poll() {
     if (v(11)) drawSeismogram(v(11));
     if (v(12)) updJellyBall(v(12));
     if (v(13)) updNeural(v(13));
-    if (v(14)) updGlobalCR(v(14));
+    if (v(14)) { updGlobalCR(v(14)); if (v(14).global_mean != null) updateCRRate(v(14).global_mean); }
     if (v(15)) updTEC(v(15));
     // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
@@ -1640,157 +1640,214 @@ function animateComet() {
 buildComet();
 
 // ============================================================
-// CINEMATIC EFFECTS
+// PHYSICAL SIMULATION LAYERS
 // ============================================================
 
-// --- COSMIC RAY STREAKS ---
-// High-energy particles from deep space, deflected by magnetosphere
-const CR_COUNT = 15;
-const crPositions = new Float32Array(CR_COUNT * 6); // start + end per ray
-const crColors = new Float32Array(CR_COUNT * 6);
-const crLifetimes = new Float32Array(CR_COUNT);
+// --- COSMIC RAY (single particle, data-driven rate) ---
+// One GCR at a time. Rate = measured neutron monitor count rate.
+// During Forbush decrease: rate drops, fewer events.
+let crActive = false;
+let crProgress = 0;
+let crCooldown = 0;
+let crRate = 120; // frames between events (driven by live CR data)
+const crTrailPts = 20;
+const crPositions = new Float32Array(crTrailPts * 3);
 const crGeo = new THREE.BufferGeometry();
 crGeo.setAttribute('position', new THREE.BufferAttribute(crPositions, 3));
-crGeo.setAttribute('color', new THREE.BufferAttribute(crColors, 3));
-const crMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false });
-const crLines = new THREE.LineSegments(crGeo, crMat);
-scene.add(crLines);
+const crLine = new THREE.Line(crGeo, new THREE.LineBasicMaterial({
+    color: 0xaaddff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+scene.add(crLine);
 
-function spawnCosmicRay(i) {
-    // Random direction from deep space
+// GCR trajectory: isotropic entry, curved by geomagnetic field
+let crEntry = new THREE.Vector3(), crDir = new THREE.Vector3(), crCharge = 1;
+
+function spawnGCR() {
+    // Enter from random direction on a sphere of radius ~5
     const theta = Math.random() * Math.PI * 2;
-    const phi = Math.random() * Math.PI;
-    const dist = 4 + Math.random() * 3;
-    const x = dist * Math.sin(phi) * Math.cos(theta);
-    const y = dist * Math.cos(phi);
-    const z = dist * Math.sin(phi) * Math.sin(theta);
-    // Trail toward Earth but deflect near magnetosphere
-    const tx = x * 0.1 + (Math.random() - 0.5) * 0.5;
-    const ty = y * 0.1 + (Math.random() - 0.5) * 0.5;
-    const tz = z * 0.1 + (Math.random() - 0.5) * 0.5;
-    const ix = i * 6;
-    crPositions[ix] = x; crPositions[ix+1] = y; crPositions[ix+2] = z;
-    crPositions[ix+3] = tx; crPositions[ix+4] = ty; crPositions[ix+5] = tz;
-    // Color: bright white-blue streak
-    const bright = 0.7 + Math.random() * 0.3;
-    crColors[ix] = bright * 0.6; crColors[ix+1] = bright * 0.8; crColors[ix+2] = bright;
-    crColors[ix+3] = 0; crColors[ix+4] = 0; crColors[ix+5] = 0; // fade to black
-    crLifetimes[i] = 30 + Math.random() * 60; // frames
+    const phi = Math.acos(2 * Math.random() - 1);
+    crEntry.set(5 * Math.sin(phi) * Math.cos(theta), 5 * Math.cos(phi), 5 * Math.sin(phi) * Math.sin(theta));
+    // Aim roughly toward Earth with some spread
+    crDir.copy(crEntry).negate().normalize();
+    crDir.x += (Math.random() - 0.5) * 0.4;
+    crDir.y += (Math.random() - 0.5) * 0.4;
+    crDir.z += (Math.random() - 0.5) * 0.4;
+    crDir.normalize();
+    crCharge = Math.random() > 0.5 ? 1 : -1;
+    crProgress = 0;
+    crActive = true;
+    crLine.material.opacity = 0.6;
 }
-for (let i = 0; i < CR_COUNT; i++) { spawnCosmicRay(i); crLifetimes[i] = Math.random() * 60; }
 
-function animateCosmicRays() {
-    for (let i = 0; i < CR_COUNT; i++) {
-        crLifetimes[i]--;
-        if (crLifetimes[i] <= 0) spawnCosmicRay(i);
-        // Fade based on lifetime
-        const fade = Math.max(0, Math.min(1, crLifetimes[i] / 20));
-        const ix = i * 6;
-        crColors[ix] *= 0.97; crColors[ix+1] *= 0.97; crColors[ix+2] *= 0.97;
-        // Extend trail
-        crPositions[ix+3] += (crPositions[ix+3] - crPositions[ix]) * 0.02;
-        crPositions[ix+4] += (crPositions[ix+4] - crPositions[ix+1]) * 0.02;
-        crPositions[ix+5] += (crPositions[ix+5] - crPositions[ix+2]) * 0.02;
+function animateGCR() {
+    if (!crActive) {
+        crCooldown--;
+        if (crCooldown <= 0) {
+            spawnGCR();
+            crCooldown = crRate;
+        }
+        crLine.material.opacity *= 0.93; // fade out trail
+        crGeo.attributes.position.needsUpdate = true;
+        return;
     }
+
+    crProgress++;
+    const pos = crEntry.clone().addScaledVector(crDir, crProgress * 0.08);
+
+    // Geomagnetic deflection: Lorentz force F = qv x B
+    // Simplified: deflect perpendicular to both velocity and radial
+    const radial = pos.clone().normalize();
+    const lorentz = new THREE.Vector3().crossVectors(crDir, radial).multiplyScalar(0.003 * crCharge / (pos.length() + 0.5));
+    crDir.add(lorentz).normalize();
+
+    // Update trail (shift positions back, add new head)
+    for (let i = crTrailPts - 1; i > 0; i--) {
+        crPositions[i * 3] = crPositions[(i - 1) * 3];
+        crPositions[i * 3 + 1] = crPositions[(i - 1) * 3 + 1];
+        crPositions[i * 3 + 2] = crPositions[(i - 1) * 3 + 2];
+    }
+    crPositions[0] = pos.x; crPositions[1] = pos.y; crPositions[2] = pos.z;
     crGeo.attributes.position.needsUpdate = true;
-    crGeo.attributes.color.needsUpdate = true;
+
+    // Terminate if hits atmosphere or escapes
+    if (pos.length() < R * 1.05) {
+        crActive = false; // absorbed by atmosphere -> shower
+        crLine.material.color.set(0xffffff); // bright flash on impact
+        setTimeout(() => crLine.material.color.set(0xaaddff), 200);
+    }
+    if (pos.length() > 8 || crProgress > 200) {
+        crActive = false; // escaped or deflected away
+    }
 }
 
-// --- TELLURIC CURRENT GRID ---
-// Glowing grid lines on Earth's surface showing current flow
-const telluricGroup = new THREE.Group();
-scene.add(telluricGroup);
-const TELLURIC_LINES = 24;
-const telluricMat = new THREE.LineBasicMaterial({ color: 0xff8844, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending, depthWrite: false });
-
-// Latitude lines (telluric current paths)
-for (let i = 0; i < 12; i++) {
-    const lat = -75 + i * 15;
-    const pts = [];
-    for (let j = 0; j <= 72; j++) pts.push(ll2v(lat, j * 5 - 180, R * 1.003));
-    telluricGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), telluricMat.clone()));
-}
-// Longitude lines
-for (let i = 0; i < 12; i++) {
-    const lon = i * 30 - 180;
-    const pts = [];
-    for (let j = 0; j <= 36; j++) pts.push(ll2v(-90 + j * 5, lon, R * 1.003));
-    telluricGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), telluricMat.clone()));
-}
-rotatingLayers.add('telluric-grid');
-layerGroups['telluric-grid'] = telluricGroup;
-
-function animateTelluric(frame) {
-    // Pulse telluric grid with Schumann-like frequency
-    // 7.83 Hz scaled to visual: ~8 pulses per 60 frames at 60fps
-    const schumannPulse = 0.5 + 0.5 * Math.sin(frame * 0.13); // ~7.8 cycles per 60 frames
-    const baseOpacity = 0.04 + stormLevel * 0.08;
-    telluricGroup.children.forEach((line, idx) => {
-        const phase = idx * 0.3; // offset each line
-        line.material.opacity = baseOpacity * (0.6 + 0.4 * Math.sin(frame * 0.13 + phase));
-        // Color shifts: orange during quiet, red during storms
-        const r = 1.0;
-        const g = 0.5 - stormLevel * 0.3;
-        const b = 0.2 - stormLevel * 0.15;
-        line.material.color.setRGB(r, Math.max(0, g), Math.max(0, b));
-    });
+// Update CR rate from live data: higher count = more frequent events
+function updateCRRate(crDeviation) {
+    // Baseline: ~one every 2 seconds (120 frames at 60fps)
+    // Forbush decrease (negative deviation): slower rate
+    // Enhanced flux: faster rate
+    crRate = Math.max(30, Math.floor(120 * (1 - crDeviation / 100 * 2)));
 }
 
-// --- SCHUMANN CAVITY PULSE ---
-// Translucent sphere that breathes at ~7.83 Hz (scaled)
-const schumannGeo = new THREE.SphereGeometry(R * 1.015, 48, 48);
-const schumannMat = new THREE.MeshBasicMaterial({
-    color: 0x44ffaa, transparent: true, opacity: 0.02,
-    side: THREE.FrontSide, depthWrite: false, blending: THREE.AdditiveBlending,
+// --- IONOSPHERIC SHELL (Schumann cavity + telluric currents) ---
+// At ~100km altitude (R * 1.016), not on the surface
+const IONO_R = R * 1.016; // 100km scale height
+
+// Schumann cavity shell with current-flow shader
+const ionoGeo = new THREE.SphereGeometry(IONO_R, 64, 64);
+const ionoMat = new THREE.ShaderMaterial({
+    uniforms: {
+        uTime: { value: 0 },
+        uStorm: { value: 0 },
+        uSchumannAmp: { value: 0.5 },
+    },
+    vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vPos;
+        varying vec2 vUv;
+        void main() {
+            vNormal = normalize(normalMatrix * normal);
+            vPos = position;
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+    fragmentShader: `
+        uniform float uTime;
+        uniform float uStorm;
+        uniform float uSchumannAmp;
+        varying vec3 vNormal;
+        varying vec3 vPos;
+        varying vec2 vUv;
+        void main() {
+            // Fresnel edge glow (ionospheric limb)
+            float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 3.0);
+
+            // Telluric current flow: horizontal waves at ionospheric altitude
+            // Two perpendicular current systems (Sq + disturbed)
+            float lat = asin(vPos.y / length(vPos));
+            float lon = atan(vPos.z, vPos.x);
+            float sqCurrent = sin(lat * 6.0 + uTime * 0.5) * cos(lon * 4.0 - uTime * 0.3);
+            float distCurrent = sin(lat * 3.0 - uTime * 1.5) * uStorm;
+
+            // Schumann resonance pulse (7.83 Hz scaled)
+            float schumann = sin(uTime * 0.82) * 0.5 + 0.5; // ~7.8 visual Hz
+            float f2 = sin(uTime * 1.50) * 0.3 + 0.3; // 2nd harmonic ~14.3 Hz
+            float schumannTotal = (schumann + f2 * 0.5) * uSchumannAmp;
+
+            // Combine: edge glow + current pattern + Schumann pulse
+            vec3 quietColor = vec3(0.15, 0.6, 0.4);   // green ionosphere
+            vec3 stormColor = vec3(0.8, 0.3, 0.15);    // orange during storms
+            vec3 baseColor = mix(quietColor, stormColor, uStorm);
+
+            float alpha = fresnel * 0.08
+                        + abs(sqCurrent) * 0.015 * (1.0 + uStorm)
+                        + abs(distCurrent) * 0.03
+                        + schumannTotal * 0.01;
+            alpha = clamp(alpha, 0.0, 0.15);
+
+            gl_FragColor = vec4(baseColor + vec3(schumannTotal * 0.2), alpha);
+        }`,
+    transparent: true, side: THREE.FrontSide, depthWrite: false, blending: THREE.AdditiveBlending,
 });
-const schumannShell = new THREE.Mesh(schumannGeo, schumannMat);
-scene.add(schumannShell);
+const ionoShell = new THREE.Mesh(ionoGeo, ionoMat);
+ionoShell.name = 'ionosphere';
+scene.add(ionoShell);
+// Ionosphere rotates with Earth
+rotatingLayers.add('ionosphere-dummy'); // placeholder so it's tracked
 
-function animateSchumann(frame) {
-    // Breathe at Schumann fundamental
-    const pulse = Math.sin(frame * 0.13) * 0.5 + 0.5;
-    schumannShell.material.opacity = 0.01 + pulse * 0.03 + stormLevel * 0.02;
-    schumannShell.scale.setScalar(1 + pulse * 0.003);
-    // Color: green during quiet, shifts cyan during storms
-    const g = 1.0 - stormLevel * 0.3;
-    const b = 0.7 + stormLevel * 0.3;
-    schumannShell.material.color.setRGB(0.3, g, b);
+function animateIonosphere(frame) {
+    ionoShell.rotation.y = earth.rotation.y; // sync with Earth
+    ionoMat.uniforms.uTime.value = frame * 0.016;
+    ionoMat.uniforms.uStorm.value = stormLevel;
 }
 
-// --- ENERGY FLOW ALONG FIELD LINES ---
-// Small bright dots that travel along the dipole field lines
-const FLOW_DOTS = 40;
-const flowPositions = new Float32Array(FLOW_DOTS * 3);
-const flowColors = new Float32Array(FLOW_DOTS * 3);
-const flowGeo = new THREE.BufferGeometry();
-flowGeo.setAttribute('position', new THREE.BufferAttribute(flowPositions, 3));
-flowGeo.setAttribute('color', new THREE.BufferAttribute(flowColors, 3));
-const flowPts = new THREE.Points(flowGeo, new THREE.PointsMaterial({
-    size: 0.02, vertexColors: true, transparent: true, opacity: 0.9,
+// --- FIELD-ALIGNED CURRENT DOTS ---
+// Charged particles flowing along field lines (region 1 + region 2 FAC)
+// Rate scales with Kp — more FAC during storms
+const FAC_COUNT = 30;
+const facPositions = new Float32Array(FAC_COUNT * 3);
+const facColors = new Float32Array(FAC_COUNT * 3);
+const facGeo = new THREE.BufferGeometry();
+facGeo.setAttribute('position', new THREE.BufferAttribute(facPositions, 3));
+facGeo.setAttribute('color', new THREE.BufferAttribute(facColors, 3));
+const facPts = new THREE.Points(facGeo, new THREE.PointsMaterial({
+    size: 0.015, vertexColors: true, transparent: true, opacity: 0.8,
     blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
 }));
-scene.add(flowPts);
+scene.add(facPts);
 
-// Each dot has: phi (which field line), theta_progress (where along it), speed
-const flowState = [];
-for (let i = 0; i < FLOW_DOTS; i++) {
-    flowState.push({
+const facState = [];
+for (let i = 0; i < FAC_COUNT; i++) {
+    facState.push({
         phi: Math.random() * Math.PI * 2,
-        L: 2.0 + Math.floor(Math.random() * 4) * 0.7,
+        L: 1.8 + Math.floor(Math.random() * 4) * 0.6,
         theta: Math.random() * Math.PI,
-        speed: 0.02 + Math.random() * 0.03,
+        speed: 0.015 + Math.random() * 0.025,
         dir: Math.random() > 0.5 ? 1 : -1,
+        active: Math.random() < 0.3 + stormLevel * 0.5, // more active during storms
     });
 }
 
-function animateFieldFlow(frame) {
+function animateFAC(frame) {
     const S = 0.5;
-    for (let i = 0; i < FLOW_DOTS; i++) {
-        const f = flowState[i];
+    const activeThreshold = 0.3 + stormLevel * 0.5;
+    for (let i = 0; i < FAC_COUNT; i++) {
+        const f = facState[i];
+        if (!f.active) {
+            // Randomly activate based on storm level
+            if (Math.random() < 0.002 * (1 + stormLevel * 5)) {
+                f.active = true;
+                f.theta = Math.random() * Math.PI;
+                f.phi = Math.random() * Math.PI * 2;
+            }
+            facPositions[i * 3] = 99; facPositions[i * 3 + 1] = 99; facPositions[i * 3 + 2] = 99;
+            continue;
+        }
+
         f.theta += f.speed * f.dir;
         if (f.theta > Math.PI || f.theta < 0) {
             f.dir *= -1;
-            f.theta = Math.max(0, Math.min(Math.PI, f.theta));
+            f.theta = Math.max(0.01, Math.min(Math.PI - 0.01, f.theta));
+            if (Math.random() > activeThreshold) f.active = false; // deactivate sometimes
         }
 
         const r = f.L * Math.sin(f.theta) * Math.sin(f.theta);
@@ -1801,18 +1858,18 @@ function animateFieldFlow(frame) {
         if (x < 0) x *= 1 + (1 - magnetoCompression) * 0.8;
 
         const ix = i * 3;
-        flowPositions[ix] = x * S;
-        flowPositions[ix + 1] = y * S;
-        flowPositions[ix + 2] = z * S;
+        facPositions[ix] = x * S;
+        facPositions[ix + 1] = y * S;
+        facPositions[ix + 2] = z * S;
 
-        // Color: cyan near equator, green near poles
-        const equatorDist = Math.abs(f.theta - Math.PI / 2) / (Math.PI / 2);
-        flowColors[ix] = 0.2 + equatorDist * 0.3;
-        flowColors[ix + 1] = 0.8 + equatorDist * 0.2;
-        flowColors[ix + 2] = 1.0 - equatorDist * 0.3;
+        // Color: cyan flowing toward equator, magenta flowing toward poles
+        const towardEquator = (f.dir > 0 && f.theta < Math.PI / 2) || (f.dir < 0 && f.theta > Math.PI / 2);
+        facColors[ix] = towardEquator ? 0.3 : 0.8;
+        facColors[ix + 1] = towardEquator ? 0.9 : 0.3;
+        facColors[ix + 2] = towardEquator ? 1.0 : 0.9;
     }
-    flowGeo.attributes.position.needsUpdate = true;
-    flowGeo.attributes.color.needsUpdate = true;
+    facGeo.attributes.position.needsUpdate = true;
+    facGeo.attributes.color.needsUpdate = true;
 }
 
 // ===== ANIMATE =====
@@ -1823,8 +1880,6 @@ function animate() {
     frame++;
     const rot = 0.00015;
     earth.rotation.y += rot; wireframe.rotation.y += rot;
-    schumannShell.rotation.y += rot;
-    telluricGroup.rotation.y += rot;
     for (const name of rotatingLayers) { if (layerGroups[name]) layerGroups[name].rotation.y += rot; }
 
     // Earthquake wave propagation
@@ -1858,17 +1913,14 @@ function animate() {
         });
     }
 
-    // Cosmic ray streaks
-    animateCosmicRays();
+    // Galactic cosmic ray (single, data-driven rate)
+    animateGCR();
 
-    // Telluric current grid pulse
-    animateTelluric(frame);
+    // Ionospheric shell (Schumann + telluric currents)
+    animateIonosphere(frame);
 
-    // Schumann cavity breathing
-    animateSchumann(frame);
-
-    // Energy flow along field lines
-    animateFieldFlow(frame);
+    // Field-aligned currents (Kp-driven)
+    animateFAC(frame);
 
     composer.render();
 }
