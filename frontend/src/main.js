@@ -554,29 +554,23 @@ function drawSeismogram(data) {
 function updJellyBall(data) {
     if (!data || data.error) return;
 
-    // J value and bar
+    // J gauge
     const jEl = document.getElementById('jb-j');
     if (jEl) {
         jEl.textContent = data.j_current?.toFixed(3) || '--';
         jEl.style.color = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#44ff44';
     }
-
-    // J bar (0 to 1.0 scale)
     const bar = document.getElementById('jb-bar');
     if (bar) {
         bar.style.width = Math.min(100, (data.j_current || 0) * 100) + '%';
         bar.style.background = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#4488ff';
     }
-
-    // J_c marker line position (at 63.66% of the bar)
     const marker = document.getElementById('jb-jc-marker');
     if (marker) marker.style.width = ((data.j_critical || 0.637) * 100) + '%';
-
-    // Gap
     const gapEl = document.getElementById('jb-gap');
     if (gapEl) {
         const sign = data.gap > 0 ? '-' : '+';
-        gapEl.textContent = `${sign}${Math.abs(data.gap_pct || 0).toFixed(1)}% ${data.gap > 0 ? 'below' : 'above'} J_c`;
+        gapEl.textContent = `${sign}${Math.abs(data.gap_pct || 0).toFixed(1)}%`;
     }
 
     // Phase badge
@@ -585,40 +579,53 @@ function updJellyBall(data) {
         phaseEl.textContent = data.phase || '--';
         const p = (data.phase || '').toLowerCase();
         phaseEl.className = 'esc-badge ' + (
-            p.includes('storm') ? 'esc-flare' :
-            p.includes('critical') ? 'esc-active' :
+            p.includes('storm') ? 'esc-flare' : p.includes('critical') ? 'esc-active' :
             p.includes('recovery') ? 'esc-elevated' : 'esc-quiet'
         );
-        phaseEl.style.fontSize = '9px';
-        phaseEl.style.padding = '1px 6px';
+        phaseEl.style.fontSize = '8px'; phaseEl.style.padding = '1px 5px';
     }
 
-    // Correlation length
+    // Coupling info
     const xiEl = document.getElementById('jb-xi');
     if (xiEl) {
         const xi = data.correlation_length_km;
-        if (xi > 1e6) xiEl.textContent = `${(xi / 1e6).toFixed(1)}M km (${data.correlation_length_rsun} R_sun)`;
-        else if (xi > 1e3) xiEl.textContent = `${(xi / 1e3).toFixed(0)}k km`;
-        else xiEl.textContent = `${xi?.toFixed(0) || '--'} km`;
+        xiEl.textContent = xi > 1e6 ? `${(xi / 1e6).toFixed(1)}M km` : xi > 1e3 ? `${(xi / 1e3).toFixed(0)}k` : `${xi?.toFixed(0) || '--'}`;
         xiEl.style.color = xi > 1e6 ? '#ff4444' : xi > 1e5 ? '#ffaa44' : '#44aaff';
     }
-
-    // Shield
     const shieldEl = document.getElementById('jb-shield');
     if (shieldEl) {
         shieldEl.textContent = data.shield || '--';
         shieldEl.style.color = data.shield === 'ON' ? '#4f4' : data.shield === 'OFF' ? '#f44' : '#ff4';
     }
 
-    // Wavefront risk
-    const wfEl = document.getElementById('jb-wf-risk');
-    if (wfEl && data.zone_risk?.wavefront) {
-        const wf = data.zone_risk.wavefront;
-        wfEl.textContent = `${wf.factor}x (${wf.risk})`;
-        wfEl.style.color = wf.factor > 1.1 ? '#ff4444' : '#44ff44';
+    // Three-body coupling indicators
+    // Solar l=2: from Kp (higher Kp = stronger solar driving)
+    const solarEl = document.getElementById('h-solar');
+    if (solarEl && data.inputs) {
+        const kp = data.inputs.kp || 0;
+        const solarL2 = Math.min(1, kp / 9);
+        solarEl.textContent = solarL2.toFixed(2);
+        solarEl.style.color = solarL2 > 0.5 ? '#ff8844' : '#556';
+    }
+    // Lunar l=2: compute from current lunar phase (fortnightly M2)
+    const lunarEl = document.getElementById('h-lunar');
+    if (lunarEl) {
+        // Quick lunar phase calc
+        const ref = new Date('2000-01-06T00:00:00Z').getTime();
+        const now = Date.now();
+        const phase = ((now - ref) / 86400000 % 29.53059) / 29.53059;
+        const m2 = Math.abs(Math.cos(2 * Math.PI * phase)); // 1 at new/full, 0 at quarters
+        lunarEl.textContent = m2.toFixed(2);
+        lunarEl.style.color = m2 > 0.7 ? '#88aaff' : '#556';
+    }
+    // Storm l=2: from J gap (closer to J_c = stronger ringing)
+    const stormEl = document.getElementById('h-storm');
+    if (stormEl && data.gap_pct != null) {
+        const stormL2 = Math.max(0, 1 - Math.abs(data.gap_pct) / 30);
+        stormEl.textContent = stormL2.toFixed(2);
+        stormEl.style.color = stormL2 > 0.5 ? '#44ff88' : '#556';
     }
 
-    // Detail
     const detailEl = document.getElementById('jb-detail');
     if (detailEl) detailEl.textContent = data.phase_detail || '--';
 }
@@ -632,15 +639,29 @@ function updNeural(data) {
     nnData = data;
     renderNeuralZones();
 
-    // Modes + bivector
+    // Mode amplitude bars
     const modes = data.diagnostics?.mode_amplitudes;
-    const modesEl = document.getElementById('nn-modes');
-    if (modesEl && modes) {
-        modesEl.textContent = Object.entries(modes).map(([k, v]) => `${k}=${v > 0 ? '+' : ''}${v.toFixed(2)}`).join(' ');
+    if (modes) {
+        for (let l = 1; l <= 6; l++) {
+            const key = `l${l}`;
+            const val = modes[key] ?? 0;
+            const bar = document.getElementById(`mode-l${l}`);
+            const score = document.getElementById(`ms-l${l}`);
+            if (bar) {
+                const pct = Math.min(100, Math.abs(val) / 5 * 100);
+                const hue = val > 0 ? (l === 2 ? '#ff8844' : l === 3 ? '#44aaff' : '#44ff88')
+                                     : (l === 2 ? '#ff4466' : '#6644aa');
+                bar.style.width = pct + '%';
+                bar.style.background = hue;
+            }
+            if (score) score.textContent = (val > 0 ? '+' : '') + val.toFixed(2);
+        }
     }
+
+    // Bivector norm
     const bivEl = document.getElementById('nn-biv');
     if (bivEl && data.diagnostics?.bivector_norm != null) {
-        bivEl.textContent = data.diagnostics.bivector_norm.toFixed(2);
+        bivEl.textContent = data.diagnostics.bivector_norm.toFixed(1);
     }
 }
 

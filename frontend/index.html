@@ -316,58 +316,73 @@
                 </div>
             </div>
 
-            <!-- Jelly Ball Prediction Tracker -->
-            <div class="p" id="jb-panel">
-                <h4>JELLY BALL OSCILLATOR</h4>
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <!-- Three-Body Harmonics -->
+            <div class="p" id="harmonics-panel">
+                <h4>THREE-BODY HARMONICS <span style="font-size:8px;color:#556;">Cl(3,0) on S<sup>2</sup></span></h4>
+
+                <!-- J gauge + phase badge -->
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
                     <div>
                         <span style="font-size:9px;color:#556;">J = </span>
-                        <span style="font-size:16px;font-weight:bold;" id="jb-j">--</span>
-                        <span style="font-size:9px;color:#556;"> / J<sub>c</sub> = 0.637</span>
+                        <span style="font-size:14px;font-weight:bold;" id="jb-j">--</span>
+                        <span style="font-size:8px;color:#556;"> / J<sub>c</sub> = 2/pi</span>
                     </div>
-                    <div class="esc-badge esc-quiet" id="jb-phase" style="font-size:9px;padding:1px 6px;">QUIET</div>
+                    <div class="esc-badge esc-quiet" id="jb-phase" style="font-size:8px;padding:1px 5px;">QUIET</div>
                 </div>
-                <div class="det-bar-bg" style="height:12px;margin-bottom:3px;position:relative;">
+                <div class="det-bar-bg" style="height:10px;margin-bottom:2px;position:relative;">
                     <div style="position:absolute;left:0;top:0;height:100%;background:rgba(255,68,68,0.15);border-right:2px solid #f44;" id="jb-jc-marker"></div>
                     <div class="det-bar" id="jb-bar" style="width:0%;background:#4488ff;position:relative;z-index:1;"></div>
                 </div>
-                <div style="display:flex;justify-content:space-between;font-size:8px;color:#556;">
-                    <span>0</span>
-                    <span id="jb-gap">gap: --</span>
-                    <span>J<sub>c</sub></span>
-                    <span>1.0</span>
+                <div style="display:flex;justify-content:space-between;font-size:7px;color:#445;margin-bottom:4px;">
+                    <span>0</span><span id="jb-gap">--</span><span>J<sub>c</sub></span><span>1</span>
                 </div>
-                <div style="margin-top:4px;">
-                    <div class="field-row">
-                        <span class="field-name">Correlation len</span>
-                        <span class="field-val" id="jb-xi" style="color:#44aaff">-- km</span>
+
+                <!-- Legendre mode amplitudes -->
+                <div style="font-size:8px;color:#667;margin-bottom:2px;">CAVITY MODES P<sub>l</sub>(cos theta)</div>
+                <div id="mode-bars">
+                    <div class="det-row"><span class="det-label">l=1 dipole</span><div class="det-bar-bg"><div class="det-bar" id="mode-l1" style="width:0%"></div></div><span class="det-score" id="ms-l1">--</span></div>
+                    <div class="det-row"><span class="det-label" style="color:#ff8844;">l=2 quadrup</span><div class="det-bar-bg"><div class="det-bar" id="mode-l2" style="width:0%"></div></div><span class="det-score" id="ms-l2" style="color:#ff8844;">--</span></div>
+                    <div class="det-row"><span class="det-label" style="color:#44aaff;">l=3 octupol</span><div class="det-bar-bg"><div class="det-bar" id="mode-l3" style="width:0%"></div></div><span class="det-score" id="ms-l3" style="color:#44aaff;">--</span></div>
+                    <div class="det-row"><span class="det-label">l=4</span><div class="det-bar-bg"><div class="det-bar" id="mode-l4" style="width:0%"></div></div><span class="det-score" id="ms-l4">--</span></div>
+                    <div class="det-row"><span class="det-label">l=5</span><div class="det-bar-bg"><div class="det-bar" id="mode-l5" style="width:0%"></div></div><span class="det-score" id="ms-l5">--</span></div>
+                    <div class="det-row"><span class="det-label">l=6</span><div class="det-bar-bg"><div class="det-bar" id="mode-l6" style="width:0%"></div></div><span class="det-score" id="ms-l6">--</span></div>
+                </div>
+
+                <!-- Three-body coupling -->
+                <div style="display:flex;gap:4px;margin-top:4px;">
+                    <div style="flex:1;text-align:center;background:#0b0b1a;border-radius:3px;padding:3px;">
+                        <div style="font-size:7px;color:#ff8844;">SOLAR l=2</div>
+                        <div style="font-size:11px;font-weight:bold;" id="h-solar">--</div>
                     </div>
-                    <div class="field-row">
-                        <span class="field-name">Bz Shield</span>
-                        <span class="field-val" id="jb-shield" style="color:#4f4">--</span>
+                    <div style="flex:1;text-align:center;background:#0b0b1a;border-radius:3px;padding:3px;">
+                        <div style="font-size:7px;color:#88aaff;">LUNAR l=2</div>
+                        <div style="font-size:11px;font-weight:bold;" id="h-lunar">--</div>
                     </div>
-                    <div class="field-row">
-                        <span class="field-name">Wavefront risk</span>
-                        <span class="field-val" id="jb-wf-risk" style="color:#f44">--</span>
+                    <div style="flex:1;text-align:center;background:#0b0b1a;border-radius:3px;padding:3px;">
+                        <div style="font-size:7px;color:#44ff88;">STORM l=2</div>
+                        <div style="font-size:11px;font-weight:bold;" id="h-storm">--</div>
                     </div>
                 </div>
-                <div class="d" id="jb-detail" style="margin-top:3px;">--</div>
+
+                <!-- Coupling info -->
+                <div style="display:flex;gap:6px;margin-top:3px;font-size:8px;color:#556;">
+                    <span>Shield: <span id="jb-shield" style="color:#4f4">--</span></span>
+                    <span>Xi: <span id="jb-xi" style="color:#44aaff">--</span></span>
+                    <span>Biv: <span id="nn-biv">--</span></span>
+                </div>
+                <div class="d" id="jb-detail" style="margin-top:2px;">--</div>
             </div>
 
             <!-- Neural Zone Predictions -->
             <div class="p" id="neural-panel">
-                <h4>JELLYBALL NET <span style="font-size:8px;color:#556;">(253 params, 473 storms)</span></h4>
-                <div style="display:flex;gap:2px;margin-bottom:4px;" id="nn-phase-tabs">
-                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#0cf;color:#050510;border:1px solid #0cf;border-radius:2px;cursor:pointer;" data-phase="compression">COMP</button>
-                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="peak">PEAK</button>
-                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="relaxation_early">RELAX-E</button>
-                    <button class="sun-btns" style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="relaxation_late">RELAX-L</button>
+                <h4>ZONE PREDICTIONS <span style="font-size:8px;color:#556;">JellyBallNet</span></h4>
+                <div style="display:flex;gap:2px;margin-bottom:3px;" id="nn-phase-tabs">
+                    <button style="font-size:7px;padding:1px 4px;background:#0cf;color:#050510;border:1px solid #0cf;border-radius:2px;cursor:pointer;" data-phase="compression">COMP</button>
+                    <button style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="peak">PEAK</button>
+                    <button style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="relaxation_early">RELAX-E</button>
+                    <button style="font-size:7px;padding:1px 4px;background:#141430;color:#aaa;border:1px solid #2a2a44;border-radius:2px;cursor:pointer;" data-phase="relaxation_late">RELAX-L</button>
                 </div>
                 <div id="nn-zones"></div>
-                <div style="display:flex;gap:8px;margin-top:3px;font-size:8px;color:#556;">
-                    <span>Modes: <span id="nn-modes">--</span></span>
-                    <span>Biv: <span id="nn-biv">--</span></span>
-                </div>
             </div>
 
             <!-- Field Strengths -->
