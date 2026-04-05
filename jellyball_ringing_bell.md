@@ -202,13 +202,75 @@ If a new CME arrives from perihelion-triggered activity (April 6-7):
 
 ---
 
-## 8. Implications
+## 8. Solar Harmonics: The Same Modes on the Sun
 
-The Jelly Ball is not a static spatial filter — it is a **dynamical system**. The Earth responds to CME impulses as a resonating sphere, with the spatial pattern of seismicity modulation determined by the instantaneous phase of the ringing cavity modes. The Paper XXV zones are the time-averaged pattern; the instantaneous pattern rotates through the Legendre polynomial mode shapes as the system rings down.
+The Legendre mode structure is not unique to Earth. Analysis of 3,202 solar flares shows the **same P_l eigenmodes govern the Sun's activity distribution**:
 
-This connects three previously separate phenomena through a single geometric framework:
+| Mode | Solar <P_l> | t-stat | Physical meaning |
+|------|------------|--------|------------------|
+| **l=2** | **-0.375** | **-229** | Active region belt (butterfly diagram) |
+| l=4 | +0.110 | +36 | Joy's law tilt structure |
+| l=3 | +0.047 | +8 | North-South asymmetry |
+
+The l=2 quadrupole dominates both systems: on the Sun it creates the butterfly diagram active region belt at ±15° latitude; on Earth it creates the far-suppress zone at 125° from the subsolar point. Both are **P_2 node structures**.
+
+Flares cluster significantly closer to Legendre nodes than random (p < 0.001 for l=1, 2, 3, 4, 6). M/X class flares show **stronger** l=2 coupling (-0.380) than C/B flares (-0.352) — energetic eruptions are more tightly bound to the harmonic geometry.
+
+The Sun and Earth are **weakly coupled oscillators** sharing the same Cl(3,0) geometry on S²:
+- Kuramoto phase synchronization: r = 0.04 (not phase-locked, p=0.83)
+- Daily Kp→EQ lagged correlation: r = -0.033 at lag 2-3 days (p=0.001)
+- The anti-correlation confirms the Jelly Ball: storms suppress, then release
+
+The coupling is **impulsive, not resonant**: each CME is a discrete kick to a damped oscillator. Earth rings at its own l=2 frequency (Q~3-5, ~3-5 day decay), not at the solar cycle frequency.
+
+---
+
+## 9. Lunar Coupling: Three-Body l=2 Resonance
+
+The Moon adds a third l=2 mode to the system. Analysis of 165,155 shallow earthquakes shows:
+
+**Fortnightly M2 tidal signal**: chi² = 101, p < 0.0001. Earthquakes prefer **quarter moons** over new/full — the **opposite** of direct tidal triggering. This is the same strain-storage-release mechanism: spring tides load strain at P_2 nodes, quarter moons release it.
+
+**Depth gradient matches pore fluid coupling:**
+
+| Depth | M2 signal | p-value |
+|-------|----------|---------|
+| 0-15 km | -0.002 | 0.53 (ns) |
+| 15-35 km | -0.013 | 0.001 ** |
+| **35-70 km** | **-0.019** | **< 0.0001** *** |
+| 70-150 km | +0.001 | 0.81 (ns) |
+
+The tidal signal peaks at **35-70 km** (brittle-ductile transition) — the same depth range where the solar EM coupling is strongest. Pore fluid is the shared medium for both solar and lunar forcing.
+
+### Three-Body l=2 Model
+
+Three quadrupole modes on three bodies, all acting on the same P_2(cos θ):
+
+| Body | Period | Mechanism |
+|------|--------|-----------|
+| Sun | 22 years (Hale) | IMF → magnetosphere → telluric Jz → pore pressure |
+| Moon | 14.77 days (M2) | Body tide → tidal stress → pore pressure |
+| Earth | 3-5 days (ringdown) | Cavity mode → zone-resolved strain release |
+
+**Combined effective coupling:**
+
+**J_eff(θ, t) = J_tectonic + a_solar · P_2(cos θ) · f(t) + a_lunar · P_2(cos θ) · g(t) + a_storm · P_2(cos θ) · h(t) · exp(-γt)**
+
+When all three align (storm + spring tide + P_2 node geometry), the effective J can cross J_c even for moderate individual forcings. The April 2026 Indonesia swarm exemplifies this: G3 storm (a_storm large) + Full Moon April 1 (a_lunar maximum) + comet perihelion + epicenter at 121° (P_2 node at 125°).
+
+---
+
+## 10. Implications
+
+The Jelly Ball is not a static spatial filter — it is a **dynamical system** embedded in a **three-body l=2 resonance**. The Earth responds to CME impulses as a resonating sphere, with the spatial pattern of seismicity modulation determined by the instantaneous phase of the ringing cavity modes, further modulated by the lunar tidal cycle.
+
+This connects four previously separate phenomena through a single geometric framework:
+- **Solar activity** (l=2 butterfly diagram, flare clustering at P_l nodes)
 - **Schumann resonances** (electromagnetic cavity modes, P_l spatial patterns, Hz timescale)
 - **Geomagnetic storm recovery** (magnetospheric dynamics, days timescale)
 - **Post-storm seismicity patterns** (lithospheric strain release, same P_l spatial patterns, days timescale)
+- **Lunar tidal modulation** (fortnightly M2, body tide stress, same P_2 depth profile)
 
-The coupling mechanism is the **global electric circuit**: ionospheric conductivity changes (driven by solar wind) modulate telluric current density at the same Legendre polynomial nodes where seismicity is observed to cluster during storms.
+The coupling mechanism is the **global electric circuit**: ionospheric conductivity changes (driven by solar wind) and tidal body forces (driven by the Moon) both modulate pore pressure at faults near criticality, with the spatial pattern governed by Legendre polynomial eigenmodes — the natural modes of Clifford algebra on a sphere.
+
+The critical threshold J_c = 2/π appears to be a **universal property of Cl(3,0) on S²**, not specific to any one system. It manifests as the Kuramoto critical coupling for phase synchronization, the KT phase transition for vortex unbinding, and the onset of collective behavior in coupled oscillator networks — all unified by the same geometric algebra on the same spherical geometry.
