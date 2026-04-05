@@ -312,6 +312,7 @@
                 <label class="lt"><input type="checkbox" checked data-layer="plates"><span class="dot" style="background:#446"></span>Plate Boundaries</label>
                 <label class="lt"><input type="checkbox" data-layer="magnetometers"><span class="dot" style="background:#c4c"></span>Magnetometers</label>
                 <label class="lt"><input type="checkbox" checked data-layer="weather"><span class="dot" style="background:#fc4"></span>Precip + Lightning</label>
+                <label class="lt"><input type="checkbox" checked data-layer="clouds"><span class="dot" style="background:#8af"></span>Cloud Charge</label>
                 <label class="lt"><input type="checkbox" data-layer="geojson"><span class="dot" style="background:#4cc"></span>Custom Layers</label>
             </div>
 
@@ -438,6 +439,17 @@
                     <span id="seismo-time">--</span>
                     <span id="seismo-amp">-- nm/s</span>
                 </div>
+            </div>
+
+            <!-- Cloud Charge -->
+            <div class="p" id="cloud-panel">
+                <h4>CLOUD CHARGE <span style="font-size:8px;color:#556;">global circuit source</span></h4>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div style="font-size:9px;color:#556;">Ez <span style="font-size:13px;font-weight:bold;color:#44aaff;" id="cc-ez">--</span> V/m</div>
+                    <div style="font-size:9px;color:#556;">Cb <span style="font-size:13px;font-weight:bold;color:#ffcc44;" id="cc-storms">0</span></div>
+                    <div style="font-size:9px;color:#556;">Q <span style="font-size:13px;font-weight:bold;color:#ff8844;" id="cc-charge">--</span> C</div>
+                </div>
+                <div id="cc-stations" style="margin-top:3px;"></div>
             </div>
 
             <!-- Pore Pressure Model -->

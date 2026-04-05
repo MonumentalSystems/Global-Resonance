@@ -919,6 +919,99 @@ function updPorePressure(d) {
     }
 }
 
+function updCloudCharge(d) {
+    if (!d?.stations) return;
+
+    // Panel updates
+    const ezEl = document.getElementById('cc-ez');
+    const stormEl = document.getElementById('cc-storms');
+    const chargeEl = document.getElementById('cc-charge');
+    if (ezEl) {
+        const avgEz = d.stations.reduce((s, st) => s + (st.ez_v_m || 0), 0) / Math.max(d.stations.length, 1);
+        ezEl.textContent = avgEz.toFixed(0);
+    }
+    if (stormEl) stormEl.textContent = d.active_thunderstorms || 0;
+    if (chargeEl) chargeEl.textContent = d.global_charge_c?.toFixed(0) || '0';
+
+    // Station list
+    const container = document.getElementById('cc-stations');
+    if (container) {
+        container.innerHTML = d.stations.filter(st => st.charge_c > 0 || st.cloud_cover?.total > 50).map(st => {
+            const cc = st.cloud_cover?.total || 0;
+            const color = st.charge_type === 'Cb dipole' ? '#ffcc44' : st.charge_type === 'convective' ? '#ff8844' : '#4488ff';
+            return `<div style="display:flex;justify-content:space-between;font-size:8px;margin-bottom:1px;">
+                <span style="color:#778;">${st.name}</span>
+                <span style="color:${color};">${st.charge_type} ${st.charge_c > 0 ? st.charge_c + 'C' : cc + '%'}</span>
+            </div>`;
+        }).join('');
+    }
+
+    // Render cloud indicators on globe
+    renderCloudLayer(d);
+}
+
+function renderCloudLayer(cloudData) {
+    clearLayer('clouds');
+    if (!cloudData?.stations) return;
+    const layer = getLayer('clouds');
+
+    for (const st of cloudData.stations) {
+        const cc = st.cloud_cover?.total || 0;
+        if (cc < 20) continue; // skip clear skies
+
+        // Cloud disc at ~5km altitude (R * 1.0008 scale)
+        const cloudR = R * 1.005;
+        const pos = ll2v(st.lat, st.lon, cloudR);
+        const size = 0.04 + cc / 100 * 0.06; // bigger for more cloud
+
+        // Color by type
+        let color, opacity;
+        if (st.charge_type === 'Cb dipole') {
+            color = 0xffcc44; opacity = 0.25; // bright yellow thunderstorm
+        } else if (st.charge_type === 'convective') {
+            color = 0xff8844; opacity = 0.15;
+        } else if (st.charge_type === 'stratiform') {
+            color = 0x88aacc; opacity = 0.08;
+        } else {
+            color = 0x6688aa; opacity = 0.04 + cc / 100 * 0.04; // gray for overcast
+        }
+
+        // Cloud halo
+        const cloudGeo = new THREE.SphereGeometry(size, 8, 8);
+        const cloudMat = new THREE.MeshBasicMaterial({
+            color, transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending,
+        });
+        const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+        cloud.position.copy(pos);
+        cloud.userData = { type: 'cloud', ...st };
+        layer.add(cloud);
+
+        // Charge gradient arrow (if charged): vertical line showing dipole
+        if (st.charge_c > 1) {
+            const basePos = ll2v(st.lat, st.lon, R * 1.003);
+            const topPos = ll2v(st.lat, st.lon, R * 1.003 + 0.015 + st.charge_c / 100);
+            // Negative base (blue) to positive top (red)
+            const arrowGeo = new THREE.BufferGeometry().setFromPoints([basePos, topPos]);
+            const arrowMat = new THREE.LineBasicMaterial({
+                color: 0xff4488, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false,
+            });
+            layer.add(new THREE.Line(arrowGeo, arrowMat));
+
+            // Negative charge marker at base
+            const negGeo = new THREE.SphereGeometry(0.004, 6, 6);
+            const neg = new THREE.Mesh(negGeo, new THREE.MeshBasicMaterial({ color: 0x4466ff, transparent: true, opacity: 0.5 }));
+            neg.position.copy(basePos);
+            layer.add(neg);
+
+            // Positive charge marker at top
+            const posGeo = new THREE.SphereGeometry(0.004, 6, 6);
+            const posM = new THREE.Mesh(posGeo, new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.5 }));
+            posM.position.copy(topPos);
+            layer.add(posM);
+        }
+    }
+}
+
 // --- WEATHER INDICATORS ON GLOBE ---
 function renderWeatherMarkers(precipData) {
     clearLayer('weather');
@@ -1226,6 +1319,7 @@ async function poll() {
         fetchJSON('/precipitation'),         // 16
         fetchJSON('/lightning'),             // 17
         fetchJSON('/pore_pressure'),         // 18
+        fetchJSON('/cloud_charge'),          // 19
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -1252,6 +1346,7 @@ async function poll() {
     if (v(16)) updPrecip(v(16));
     if (v(17)) updLightning(v(17));
     if (v(18)) updPorePressure(v(18));
+    if (v(19)) updCloudCharge(v(19));
     // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;

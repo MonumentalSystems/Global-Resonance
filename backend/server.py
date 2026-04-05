@@ -1154,6 +1154,143 @@ def get_lightning():
     return result
 
 
+@app.get("/api/cloud_charge")
+async def get_cloud_charge():
+    """
+    Cloud cover and charge gradient model.
+
+    Cloud layers are the charge SOURCE for the global electric circuit:
+    - Cumulonimbus: dipole (negative base ~3km, positive top ~10km)
+    - Stratiform: weak negative sheet
+    - Clear: no local charge (fair weather Ez from distant storms)
+
+    Returns cloud cover at 3 altitudes + estimated charge density +
+    Carnegie curve Ez + convective energy (CAPE) for each station.
+    """
+    stations = [
+        {"name": "Indonesia", "lat": 1.0, "lon": 125.0},
+        {"name": "Japan", "lat": 36.0, "lon": 140.0},
+        {"name": "Chile", "lat": -33.4, "lon": -70.6},
+        {"name": "California", "lat": 34.0, "lon": -118.2},
+        {"name": "Vanuatu", "lat": -17.7, "lon": 168.3},
+        {"name": "Central US", "lat": 35.0, "lon": -97.0},
+        {"name": "C. Africa", "lat": 0.0, "lon": 25.0},
+        {"name": "Amazon", "lat": -3.0, "lon": -60.0},
+        {"name": "India", "lat": 20.0, "lon": 77.0},
+        {"name": "Australia", "lat": -25.0, "lon": 134.0},
+    ]
+
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for st in stations:
+                cache_key = f"cloud_{st['name']}"
+                if cache_key in CACHE and time.time() - CACHE[cache_key]["ts"] < 600:
+                    results.append(CACHE[cache_key]["data"])
+                    continue
+                try:
+                    url = (f"https://api.open-meteo.com/v1/forecast?"
+                           f"latitude={st['lat']}&longitude={st['lon']}"
+                           f"&hourly=cloudcover,cloudcover_low,cloudcover_mid,cloudcover_high,"
+                           f"precipitation,weathercode,cape"
+                           f"&past_days=1&forecast_days=0")
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        continue
+                    d = resp.json().get("hourly", {})
+                    cc = d.get("cloudcover", [])
+                    cc_low = d.get("cloudcover_low", [])
+                    cc_mid = d.get("cloudcover_mid", [])
+                    cc_high = d.get("cloudcover_high", [])
+                    precip = d.get("precipitation", [])
+                    codes = d.get("weathercode", [])
+                    cape_vals = d.get("cape", [])
+
+                    # Current values (last hour)
+                    cur_cc = cc[-1] if cc else 0
+                    cur_low = cc_low[-1] if cc_low else 0
+                    cur_mid = cc_mid[-1] if cc_mid else 0
+                    cur_high = cc_high[-1] if cc_high else 0
+                    cur_precip = precip[-1] if precip else 0
+                    cur_code = codes[-1] if codes else 0
+                    cur_cape = cape_vals[-1] if cape_vals else 0
+
+                    # Cloud charge estimation
+                    # Thunderstorm (WMO 95-99): ~30 C dipole per active cell
+                    # Heavy rain (80-84): ~5 C weak charge separation
+                    # Stratiform (61-67): ~0.5 C per layer
+                    # Fair weather: 0 C local
+                    is_thunder = cur_code and cur_code >= 95
+                    is_heavy = cur_code and 80 <= cur_code <= 84
+                    is_rain = cur_code and 60 <= cur_code <= 67
+
+                    if is_thunder:
+                        charge_c = 30 * max(1, cur_precip / 10)
+                        charge_type = "Cb dipole"
+                    elif is_heavy:
+                        charge_c = 5 * max(1, cur_precip / 5)
+                        charge_type = "convective"
+                    elif is_rain:
+                        charge_c = 0.5
+                        charge_type = "stratiform"
+                    else:
+                        charge_c = 0
+                        charge_type = "fair weather"
+
+                    # Ez estimate: Carnegie curve + cloud modulation
+                    now_utc = datetime.now(timezone.utc)
+                    hour = now_utc.hour + now_utc.minute / 60
+                    ez_carnegie = 130 * (1 + 0.15 * math.cos(2 * math.pi * (hour - 19) / 24))
+                    # Thunderstorms enhance local Ez by 10-100x
+                    ez_local = ez_carnegie
+                    if is_thunder:
+                        ez_local = ez_carnegie * (5 + cur_precip)
+                    elif is_heavy:
+                        ez_local = ez_carnegie * 2
+                    # Overcast reduces Ez (conduction through cloud layer)
+                    elif cur_cc and cur_cc > 80:
+                        ez_local = ez_carnegie * 0.7
+
+                    # Charge gradient dQ/dz (C/m per km altitude)
+                    # Low clouds: 1-3 km, Mid: 3-6 km, High: 6-12 km
+                    gradient = {
+                        "low_1_3km": round(-charge_c * cur_low / 100 * 0.3, 2),   # negative base
+                        "mid_3_6km": round(charge_c * cur_mid / 100 * 0.1, 2),    # transition
+                        "high_6_12km": round(charge_c * cur_high / 100 * 0.5, 2), # positive top
+                    }
+
+                    entry = {
+                        **st,
+                        "cloud_cover": {"total": cur_cc, "low": cur_low, "mid": cur_mid, "high": cur_high},
+                        "charge_c": round(charge_c, 1),
+                        "charge_type": charge_type,
+                        "charge_gradient": gradient,
+                        "ez_v_m": round(ez_local, 1),
+                        "ez_carnegie": round(ez_carnegie, 1),
+                        "cape_j_kg": cur_cape,
+                        "precip_mm_hr": cur_precip,
+                        "weathercode": cur_code,
+                    }
+                    results.append(entry)
+                    CACHE[cache_key] = {"data": entry, "ts": time.time()}
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Global charge budget
+    total_charge = sum(r.get("charge_c", 0) for r in results)
+    thunder_count = sum(1 for r in results if r.get("charge_type") == "Cb dipole")
+
+    return {
+        "stations": results,
+        "global_charge_c": round(total_charge, 1),
+        "active_thunderstorms": thunder_count,
+        "n_stations": len(results),
+        "carnegie_hour": round(datetime.now(timezone.utc).hour + datetime.now(timezone.utc).minute / 60, 1),
+    }
+
+
 @app.get("/api/pore_pressure")
 def get_pore_pressure():
     """
