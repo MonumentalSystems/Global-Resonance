@@ -270,17 +270,29 @@
                 </div>
             </div>
 
-            <!-- Cosmic Rays -->
+            <!-- Cosmic Rays (global) -->
+            <div class="p">
+                <h4>COSMIC RAYS <span style="font-size:8px;color:#556;" id="cr-stations">--</span></h4>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div class="m q" id="cr-metric" style="font-size:14px;">--</div>
+                    <div style="text-align:right;">
+                        <div style="font-size:8px;color:#556;" id="cr-detail">NMDB + WDC-CR</div>
+                        <div style="font-size:9px;font-weight:bold;" id="cr-forbush" style="color:#4f4;">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lunar + TEC side by side -->
             <div class="metric-pair">
                 <div class="p">
-                    <h4>COSMIC RAYS</h4>
-                    <div class="m q" id="cr-metric" style="font-size:14px;">--</div>
-                    <div class="d" id="cr-detail">NMDB neutron monitors</div>
+                    <h4>LUNAR / TIDAL</h4>
+                    <div class="m" id="lunar-metric" style="font-size:11px;">--</div>
+                    <div class="d" id="lunar-detail"></div>
                 </div>
                 <div class="p">
-                    <h4>LUNAR / TIDAL</h4>
-                    <div class="m" id="lunar-metric" style="font-size:12px;">--</div>
-                    <div class="d" id="lunar-detail"></div>
+                    <h4>IONO TEC</h4>
+                    <div class="m q" id="tec-metric" style="font-size:11px;">--</div>
+                    <div class="d" id="tec-detail">GLOTEC/USTEC</div>
                 </div>
             </div>
         </div>

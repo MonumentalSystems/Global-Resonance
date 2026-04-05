@@ -870,6 +870,151 @@ def get_jellyball_neural():
     }
 
 
+@app.get("/api/cosmic_rays_global")
+async def get_cosmic_rays_global():
+    """
+    Global cosmic ray neutron monitor data from Nagoya WDC-CR + NMDB.
+
+    Multiple stations for better Forbush decrease detection and
+    geographic coverage of atmospheric ionization changes.
+    """
+    stations = {
+        "OULU": {"lat": 65.05, "lon": 25.47, "alt": 15, "cutoff": 0.81},
+        "MOSCOW": {"lat": 55.47, "lon": 37.32, "alt": 200, "cutoff": 2.43},
+        "KIEL": {"lat": 54.34, "lon": 10.12, "alt": 54, "cutoff": 2.36},
+        "ROME": {"lat": 41.86, "lon": 12.47, "alt": 60, "cutoff": 6.27},
+        "CLIMAX": {"lat": 39.37, "lon": -106.18, "alt": 3400, "cutoff": 2.97},
+        "THULE": {"lat": 76.50, "lon": -68.70, "alt": 260, "cutoff": 0.30},
+        "JUNGFR": {"lat": 46.55, "lon": 7.98, "alt": 3475, "cutoff": 4.48},
+        "MCMURD": {"lat": -77.85, "lon": 166.72, "alt": 48, "cutoff": 0.30},
+    }
+
+    # Try NMDB API for real-time data
+    result = {"stations": {}, "global_mean": None, "forbush": False}
+
+    try:
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(hours=72)).strftime("%Y-%m-%dT%H:%M:%S")
+        end = now.strftime("%Y-%m-%dT%H:%M:%S")
+
+        for code, info in list(stations.items())[:4]:  # limit to 4 for speed
+            cache_key = f"cr_global_{code}"
+            if cache_key in CACHE and time.time() - CACHE[cache_key]["ts"] < 600:
+                result["stations"][code] = CACHE[cache_key]["data"]
+                continue
+
+            try:
+                url = f"https://www.nmdb.eu/nest/draw_graph.php?stations[]={code}&tabchoice=revori&dtype=corr_for_efficiency&tresolution=60&force=1&startdate={start}&enddate={end}&output=ascii"
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        lines = resp.text.strip().split("\n")
+                        data_lines = [l for l in lines if l and not l.startswith("#") and ";" in l]
+                        values = []
+                        for line in data_lines[-72:]:  # last 72 hours
+                            parts = line.split(";")
+                            if len(parts) >= 2:
+                                try:
+                                    values.append(float(parts[1].strip()))
+                                except ValueError:
+                                    pass
+
+                        if values:
+                            mean_val = sum(values) / len(values)
+                            last_val = values[-1]
+                            dev = (last_val - mean_val) / mean_val * 100 if mean_val > 0 else 0
+                            station_data = {
+                                "current": round(last_val, 1),
+                                "mean_72h": round(mean_val, 1),
+                                "deviation_pct": round(dev, 2),
+                                "n_points": len(values),
+                                **info,
+                            }
+                            result["stations"][code] = station_data
+                            CACHE[cache_key] = {"data": station_data, "ts": time.time()}
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    # Compute global mean and Forbush detection
+    if result["stations"]:
+        devs = [s["deviation_pct"] for s in result["stations"].values()]
+        result["global_mean"] = round(sum(devs) / len(devs), 2)
+        result["forbush"] = any(d < -3 for d in devs)
+        result["n_stations"] = len(result["stations"])
+
+    return result
+
+
+@app.get("/api/tec")
+async def get_tec():
+    """
+    Total Electron Content from NOAA GLOTEC/USTEC models.
+
+    TEC anomalies over seismically active regions are a potential
+    pre-earthquake ionospheric signature (Freund p-hole mechanism).
+    """
+    # NCEI HAPI endpoint for GLOTEC
+    base = "https://www.ncei.noaa.gov/cloud-access/space-weather-portal/api/v1"
+
+    try:
+        # Get USTEC parameters
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{base}/hapi/info?dataset=ustec")
+            if resp.status_code == 200:
+                info = resp.json()
+                params = [p["name"] for p in info.get("parameters", []) if p["name"] != "time"]
+                return {
+                    "available": True,
+                    "dataset": "ustec",
+                    "parameters": params[:10],
+                    "start_date": info.get("startDate"),
+                    "stop_date": info.get("stopDate"),
+                    "note": "USTEC provides US Total Electron Content maps. Use /api/tec/data for time series.",
+                }
+    except Exception as e:
+        pass
+
+    return {"available": False, "note": "NCEI TEC data not accessible. Check https://www.ncei.noaa.gov/cloud-access/space-weather-portal/"}
+
+
+@app.get("/api/enlil")
+async def get_enlil():
+    """
+    WSA-Enlil solar wind prediction model output from SWPC.
+
+    Provides predicted solar wind speed, density, and IMF at Earth
+    for the next 4 days — useful for CME arrival prediction.
+    """
+    base = "https://www.ncei.noaa.gov/cloud-access/space-weather-portal/api/v1"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Get ENLIL background parameters
+            resp = await client.get(f"{base}/hapi/info?dataset=swpc_wsaenlil_bkg")
+            if resp.status_code == 200:
+                info = resp.json()
+                params = [p["name"] for p in info.get("parameters", []) if p["name"] != "time"]
+                return {
+                    "available": True,
+                    "datasets": {
+                        "background": "swpc_wsaenlil_bkg",
+                        "cme": "swpc_wsaenlil_cme",
+                    },
+                    "parameters": params[:15],
+                    "start_date": info.get("startDate"),
+                    "stop_date": info.get("stopDate"),
+                    "api_base": base,
+                    "note": "WSA-Enlil solar wind prediction. Use HAPI /data endpoint for time series.",
+                }
+    except Exception:
+        pass
+
+    return {"available": False}
+
+
 @app.get("/api/paleomag")
 def get_paleomag():
     """Bronze Age paleomagnetic field data from pfm9k.2."""

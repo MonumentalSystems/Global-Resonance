@@ -797,6 +797,37 @@ function updCR(d) {
     document.getElementById('st-cr').className = 'v ' + (d.forbush_detected ? 'w' : 'g');
 }
 
+function updGlobalCR(d) {
+    if (!d || d.error) return;
+    const stEl = document.getElementById('cr-stations');
+    if (stEl) stEl.textContent = `${d.n_stations || 0} stations`;
+    if (d.global_mean != null) {
+        const el = document.getElementById('cr-metric');
+        if (el) {
+            el.textContent = `${d.global_mean > 0 ? '+' : ''}${d.global_mean.toFixed(1)}%`;
+            el.className = 'm ' + (d.forbush ? 's' : 'q');
+        }
+        const fb = document.getElementById('cr-forbush');
+        if (fb) {
+            fb.textContent = d.forbush ? 'FORBUSH DECREASE' : 'nominal';
+            fb.style.color = d.forbush ? '#f44' : '#4f4';
+        }
+    }
+}
+
+function updTEC(d) {
+    if (!d) return;
+    const el = document.getElementById('tec-metric');
+    const det = document.getElementById('tec-detail');
+    if (d.available) {
+        if (el) { el.textContent = 'LIVE'; el.className = 'm q'; }
+        if (det) det.textContent = d.dataset || 'USTEC';
+    } else {
+        if (el) { el.textContent = 'N/A'; el.className = 'm'; }
+        if (det) det.textContent = d.note?.substring(0, 30) || 'unavailable';
+    }
+}
+
 function updDst(data) {
     if (!data) return;
     const el = document.getElementById('dst-metric'), st = document.getElementById('st-dst');
@@ -996,6 +1027,8 @@ async function poll() {
         fetchJSON('/seismic/waveform'),      // 11
         fetchJSON('/jellyball/prediction'),  // 12
         fetchJSON('/jellyball/neural'),      // 13
+        fetchJSON('/cosmic_rays_global'),    // 14
+        fetchJSON('/tec'),                   // 15
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -1017,6 +1050,8 @@ async function poll() {
     if (v(11)) drawSeismogram(v(11));
     if (v(12)) updJellyBall(v(12));
     if (v(13)) updNeural(v(13));
+    if (v(14)) updGlobalCR(v(14));
+    if (v(15)) updTEC(v(15));
     // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;
