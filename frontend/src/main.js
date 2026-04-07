@@ -1,143 +1,165 @@
+// ============================================================
+// GLOBAL RESONANCE — CesiumJS Globe + Three.js Space Physics
+// ============================================================
+import * as Cesium from 'cesium';
+import 'cesium/Build/Cesium/Widgets/widgets.css';
+// Three.js kept for future magnetosphere/solar wind overlay
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
-const API = window.location.port === '8001' ? '/api' : 'http://localhost:8001/api';
+const API = window.location.port === '5173' ? '/api' : `http://localhost:8001/api`;
 const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
-const R = 1; // earth radius
-const POLL = 30_000; // 30s poll
+const POLL = 30_000;
 
-// ===== Renderer =====
+// ============================================================
+// CESIUM GLOBE SETUP
+// ============================================================
 const box = document.getElementById('canvas-container');
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x030308);
-const camera = new THREE.PerspectiveCamera(45, box.clientWidth / box.clientHeight, 0.01, 100);
-camera.position.set(0, 1.2, 2.8);
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setSize(box.clientWidth, box.clientHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-box.appendChild(renderer.domElement);
-const ctrl = new OrbitControls(camera, renderer.domElement);
-ctrl.enableDamping = true;
-ctrl.dampingFactor = 0.06;
-ctrl.minDistance = 1.15;
-ctrl.maxDistance = 12;
 
-// Bloom post-processing
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(box.clientWidth, box.clientHeight),
-    1.2,   // strength — cinematic glow
-    0.6,   // radius — wide bloom halo
-    0.7    // threshold — more elements glow
-);
-composer.addPass(bloomPass);
-
-// ===== Lighting =====
-scene.add(new THREE.AmbientLight(0x334466, 0.6));
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.4);
-sunLight.position.set(5, 2, 5);
-scene.add(sunLight);
-
-// Stars — varied sizes and colors
-const STAR_COUNT = 6000;
-const starGeo = new THREE.BufferGeometry();
-const sv = new Float32Array(STAR_COUNT * 3);
-const starColors = new Float32Array(STAR_COUNT * 3);
-const starSizes = new Float32Array(STAR_COUNT);
-for (let i = 0; i < STAR_COUNT; i++) {
-    sv[i * 3] = (Math.random() - 0.5) * 60;
-    sv[i * 3 + 1] = (Math.random() - 0.5) * 60;
-    sv[i * 3 + 2] = (Math.random() - 0.5) * 60;
-    // Color: mostly blue-white, occasional warm
-    const temp = Math.random();
-    starColors[i * 3] = temp > 0.9 ? 1.0 : 0.6 + Math.random() * 0.3;
-    starColors[i * 3 + 1] = temp > 0.95 ? 0.5 : 0.7 + Math.random() * 0.3;
-    starColors[i * 3 + 2] = temp > 0.9 ? 0.4 : 0.8 + Math.random() * 0.2;
-    starSizes[i] = 0.008 + Math.random() * 0.02 + (Math.random() > 0.98 ? 0.04 : 0);
-}
-starGeo.setAttribute('position', new THREE.BufferAttribute(sv, 3));
-starGeo.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
-scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ vertexColors: true, size: 0.015, sizeAttenuation: true, transparent: true, opacity: 0.9 })));
-
-// ===== Globe =====
-const earthGeo = new THREE.SphereGeometry(R, 128, 128);
-const earthMat = new THREE.MeshPhongMaterial({
-    color: 0x2244aa, emissive: 0x112244, specular: 0x222244, shininess: 12,
+const viewer = new Cesium.Viewer(box, {
+    baseLayerPicker: false,
+    geocoder: false,
+    homeButton: false,
+    sceneModePicker: false,
+    navigationHelpButton: false,
+    animation: false,
+    timeline: false,
+    fullscreenButton: false,
+    vrButton: false,
+    infoBox: false,
+    selectionIndicator: false,
+    creditContainer: document.createElement('div'),
+    skyAtmosphere: new Cesium.SkyAtmosphere(),
+    orderIndependentTranslucency: true,
+    shadows: false,
+    requestRenderMode: false,
+    // No imageryProvider — we add our own below
+    imageryProvider: false,
 });
-const earth = new THREE.Mesh(earthGeo, earthMat);
-scene.add(earth);
 
-const wireGeo = new THREE.SphereGeometry(R * 1.001, 36, 18);
-const wireMat = new THREE.MeshBasicMaterial({ color: 0x334466, wireframe: true, transparent: true, opacity: 0.15 });
-const wireframe = new THREE.Mesh(wireGeo, wireMat);
-scene.add(wireframe);
+// Add imagery: try ArcGIS first, fallback to bundled Natural Earth
+(async () => {
+    try {
+        const arcgis = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
+            'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+        );
+        viewer.imageryLayers.addImageryProvider(arcgis);
+        console.log('ArcGIS World Imagery loaded');
+    } catch (e) {
+        console.warn('ArcGIS unavailable, trying Natural Earth:', e.message);
+        try {
+            const tms = await Cesium.TileMapServiceImageryProvider.fromUrl(
+                Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')
+            );
+            viewer.imageryLayers.addImageryProvider(tms);
+            console.log('Natural Earth imagery loaded');
+        } catch (e2) {
+            console.warn('Natural Earth also failed:', e2.message);
+            // Last resort: OpenStreetMap
+            viewer.imageryLayers.addImageryProvider(
+                new Cesium.OpenStreetMapImageryProvider({
+                    url: 'https://tile.openstreetmap.org/',
+                })
+            );
+            console.log('OpenStreetMap imagery loaded');
+        }
+    }
+})();
 
-const tl = new THREE.TextureLoader();
-tl.crossOrigin = 'anonymous';
-tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg',
-    t => { earthMat.map = t; earthMat.color.set(0xffffff); earthMat.emissive.set(0x000000); earthMat.needsUpdate = true; wireframe.visible = false; },
-    undefined, e => console.warn('Earth texture failed:', e)
-);
-tl.load('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg',
-    t => { earthMat.emissiveMap = t; earthMat.emissive.set(0x333333); earthMat.needsUpdate = true; },
-    undefined, e => console.warn('Night texture failed:', e)
-);
+// Configure atmosphere
+viewer.scene.skyAtmosphere.brightnessShift = 0.0;
+viewer.scene.skyAtmosphere.hueShift = -0.05;
+viewer.scene.skyAtmosphere.saturationShift = 0.1;
+viewer.scene.globe.enableLighting = true;
+viewer.scene.globe.dynamicAtmosphereLighting = true;
+viewer.scene.globe.dynamicAtmosphereLightingFromSun = true;
+viewer.scene.globe.showGroundAtmosphere = true;
+viewer.scene.globe.atmosphereBrightnessShift = -0.1;
 
-// Atmosphere — dual-layer glow
-const atmosMat = new THREE.ShaderMaterial({
-    vertexShader: `varying vec3 vNormal; varying vec3 vPos; void main() { vNormal = normalize(normalMatrix * normal); vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `
-        varying vec3 vNormal; varying vec3 vPos;
-        void main() {
-            float intensity = pow(0.65 - dot(vNormal, vec3(0,0,1)), 2.5);
-            // Blue atmosphere with cyan rim
-            vec3 col = mix(vec3(0.15, 0.4, 0.9), vec3(0.3, 0.9, 1.0), intensity);
-            gl_FragColor = vec4(col, intensity * 0.35);
-        }`,
-    transparent: true, side: THREE.BackSide, depthWrite: false, blending: THREE.AdditiveBlending,
+// Cesium renders the globe, sky, stars — Three.js overlays space physics on top
+viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#030308');
+viewer.scene.sun.show = true;
+viewer.scene.moon.show = true;
+viewer.scene.skyBox.show = true;
+
+// Initial camera: view Earth from space
+viewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(0, 20, 25000000),
+    orientation: {
+        heading: 0,
+        pitch: Cesium.Math.toRadians(-90),
+        roll: 0,
+    },
 });
-scene.add(new THREE.Mesh(new THREE.SphereGeometry(R * 1.025, 64, 64), atmosMat));
-// Outer haze — very faint wide glow
-const hazeMat = new THREE.MeshBasicMaterial({ color: 0x2266cc, transparent: true, opacity: 0.015, side: THREE.BackSide, depthWrite: false });
-scene.add(new THREE.Mesh(new THREE.SphereGeometry(R * 1.08, 32, 32), hazeMat));
 
-// ===== Coordinates =====
+// Cesium canvas stays at default z-index; Three.js overlay goes on top with pointer-events:none
+
+// Remove default Cesium UI chrome
+const toolbar = box.querySelector('.cesium-viewer-toolbar');
+if (toolbar) toolbar.style.display = 'none';
+const bottomContainer = box.querySelector('.cesium-viewer-bottom');
+if (bottomContainer) bottomContainer.style.display = 'none';
+
+// ============================================================
+// THREE.JS SPACE PHYSICS OVERLAY
+// ============================================================
+// Three.js renders magnetosphere, solar wind, comet, cosmic rays
+// on a transparent canvas overlaid on the Cesium globe.
+// We position the overlay BEHIND Cesium's canvas and use Cesium
+// primitives for near-Earth features instead.
+
+// Three.js overlay disabled — Cesium handles all rendering.
+// Magnetosphere/solar wind will be added as Cesium primitives later.
+const threeScene = new THREE.Scene();
+const threeCamera = new THREE.PerspectiveCamera(45, 1, 0.01, 200);
+
+// Three.js helpers
+const R = 1;
 function ll2v(lat, lon, r = R * 1.001) {
     const p = (90 - lat) * Math.PI / 180, t = (lon + 180) * Math.PI / 180;
     return new THREE.Vector3(-r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t));
 }
 
-function greatCirclePoints(lat1, lon1, radiusDeg, nPts = 120) {
-    const pts = [], slat = lat1 * Math.PI / 180, slon = lon1 * Math.PI / 180, rd = radiusDeg * Math.PI / 180;
-    for (let i = 0; i <= nPts; i++) {
-        const a = (i / nPts) * 2 * Math.PI;
-        const lat2 = Math.asin(Math.sin(slat) * Math.cos(rd) + Math.cos(slat) * Math.sin(rd) * Math.cos(a));
-        const lon2 = slon + Math.atan2(Math.sin(a) * Math.sin(rd) * Math.cos(slat), Math.cos(rd) - Math.sin(slat) * Math.sin(lat2));
-        pts.push(ll2v(lat2 * 180 / Math.PI, lon2 * 180 / Math.PI, R * 1.002));
+// Camera sync: map Cesium ECEF camera to Three.js scene
+const EARTH_RADIUS = 6371000;
+const SCALE = R / EARTH_RADIUS;
+
+function syncThreeCamera() {
+    const cam = viewer.camera;
+    const pos = cam.positionWC;
+    const dir = cam.directionWC;
+    const up = cam.upWC;
+
+    // Cesium uses ECEF (X=equator/prime meridian, Y=equator/90E, Z=north pole)
+    // Three.js: X=right, Y=up, Z=toward viewer
+    // Map: Cesium X -> Three X, Cesium Z -> Three Y, Cesium -Y -> Three Z
+    threeCamera.position.set(pos.x * SCALE, pos.z * SCALE, -pos.y * SCALE);
+
+    const lookTarget = new THREE.Vector3(
+        (pos.x + dir.x * 10000) * SCALE,
+        (pos.z + dir.z * 10000) * SCALE,
+        -(pos.y + dir.y * 10000) * SCALE
+    );
+    threeCamera.up.set(up.x, up.z, -up.y);
+    threeCamera.lookAt(lookTarget);
+
+    // Match FOV
+    if (cam.frustum.fovy) {
+        threeCamera.fov = Cesium.Math.toDegrees(cam.frustum.fovy);
     }
-    return pts;
+    threeCamera.updateProjectionMatrix();
 }
 
-// ===== Layer System =====
-const layerGroups = {};
-const rotatingLayers = new Set();
-const fixedLayers = new Set(['magnetosphere', 'solar-wind', 'comet']);
-
-function getLayer(name) {
-    if (!layerGroups[name]) {
-        layerGroups[name] = new THREE.Group();
-        scene.add(layerGroups[name]);
-        if (!fixedLayers.has(name)) rotatingLayers.add(name);
+// Three.js layer groups (for space physics only)
+const threeLayerGroups = {};
+function getThreeLayer(name) {
+    if (!threeLayerGroups[name]) {
+        threeLayerGroups[name] = new THREE.Group();
+        threeScene.add(threeLayerGroups[name]);
     }
-    return layerGroups[name];
+    return threeLayerGroups[name];
 }
-
-function clearLayer(name) {
-    const g = layerGroups[name];
+function clearThreeLayer(name) {
+    const g = threeLayerGroups[name];
     if (!g) return;
     while (g.children.length) {
         const c = g.children[0];
@@ -147,195 +169,809 @@ function clearLayer(name) {
     }
 }
 
-// ===== EARTHQUAKE LAYER =====
+// ============================================================
+// CESIUM DATA LAYERS
+// ============================================================
+
+// --- Layer visibility state ---
+const layerVisible = {
+    earthquakes: true, 'eq-waves': true, 'jelly-ball': true,
+    subsolar: true, terminator: true, plates: true,
+    magnetometers: false, weather: true, clouds: true, geojson: false,
+    'magnetic-field': true, 'solar-wind': true, telluric: true,
+};
+
+// --- Live state variables (updated by poll loop) ---
+let magnetoCompression = 1.0, stormLevel = 0, currentBz = 0, currentKp = 2, currentDst = 0;
+let swSpeed = 400, swDensity = 5, swElectronFlux = 100, swProtonScore = 0;
+
+// --- Data sources for each Cesium layer ---
+const dataSources = {};
+
+async function getDataSource(name) {
+    if (!dataSources[name]) {
+        const ds = new Cesium.CustomDataSource(name);
+        dataSources[name] = ds;
+        await viewer.dataSources.add(ds);
+    }
+    return dataSources[name];
+}
+
+function clearDataSource(name) {
+    if (dataSources[name]) dataSources[name].entities.removeAll();
+}
+
+function setLayerVisible(name, visible) {
+    layerVisible[name] = visible;
+    if (dataSources[name]) dataSources[name].show = visible;
+    if (threeLayerGroups[name]) threeLayerGroups[name].visible = visible;
+}
+
+// ============================================================
+// EARTHQUAKE LAYER
+// ============================================================
 const eqWaves = [];
 
-function recencyColor(ageH) {
-    if (ageH < 1) return new THREE.Color(1, 1, 1);
-    if (ageH < 6) return new THREE.Color(1, 0.3 + 0.7 * (1 - ageH / 6), 0.1);
-    if (ageH < 24) return new THREE.Color(1, 0.3 * (1 - (ageH - 6) / 18), 0);
-    if (ageH < 48) return new THREE.Color(0.5, 0.2, 0.5);
-    return new THREE.Color(0.2, 0.2, 0.5);
+function recencyColorCss(ageH) {
+    if (ageH < 1) return Cesium.Color.WHITE;
+    if (ageH < 6) return Cesium.Color.fromCssColorString(`rgb(255,${Math.floor(76 + 179 * (1 - ageH / 6))},25)`);
+    if (ageH < 24) return Cesium.Color.fromCssColorString(`rgb(255,${Math.floor(76 * (1 - (ageH - 6) / 18))},0)`);
+    if (ageH < 48) return new Cesium.Color(0.5, 0.2, 0.5, 0.8);
+    return new Cesium.Color(0.2, 0.2, 0.5, 0.6);
 }
 
-function depthToHeight(depth) {
-    return 0.07 * Math.min((depth || 10) / 700, 1);
-}
-
-function updateEarthquakes(data) {
-    clearLayer('earthquakes');
+async function updateEarthquakes(data) {
+    const ds = await getDataSource('earthquakes');
+    ds.entities.removeAll();
     eqWaves.length = 0;
     if (!data?.earthquakes) return;
-    const now = Date.now(), layer = getLayer('earthquakes');
+    const now = Date.now();
 
-    data.earthquakes.forEach(eq => {
+    for (const eq of data.earthquakes) {
         const ageH = (now - eq.time) / 3600000;
-        const col = recencyColor(ageH);
-        const h = depthToHeight(eq.depth || 33);
-        const baseSize = Math.max(0.003, Math.pow(eq.mag - 3.5, 1.3) * 0.003);
-        const pos = ll2v(eq.lat, eq.lon, R + h);
+        const color = recencyColorCss(ageH);
+        const size = Math.max(3, Math.pow(eq.mag - 3.5, 1.3) * 4);
 
-        const coreGeo = new THREE.SphereGeometry(baseSize, 8, 8);
-        const coreMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.95 });
-        const core = new THREE.Mesh(coreGeo, coreMat);
-        core.position.copy(pos);
-        core.userData = eq;
-        layer.add(core);
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(eq.lon, eq.lat, (eq.depth || 33) * 100),
+            point: {
+                pixelSize: size,
+                color: color,
+                outlineColor: Cesium.Color.BLACK.withAlpha(0.3),
+                outlineWidth: 1,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                heightReference: Cesium.HeightReference.NONE,
+            },
+            properties: { ...eq, _type: 'earthquake' },
+        });
 
-        if (h > 0.005) {
-            const surfPos = ll2v(eq.lat, eq.lon, R * 1.001);
-            const stemGeo = new THREE.BufferGeometry().setFromPoints([surfPos, pos]);
-            layer.add(new THREE.Line(stemGeo, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.4 })));
+        // Glow for M6+
+        if (eq.mag >= 6.0) {
+            ds.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(eq.lon, eq.lat, (eq.depth || 33) * 100),
+                point: {
+                    pixelSize: size * 4,
+                    color: color.withAlpha(0.1),
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+            });
         }
 
+        // Seismic wave rings for recent events
         if (ageH < 24) {
             const waveSpeed = 0.3 + (eq.mag - 4) * 0.15;
             const maxRad = 2 + Math.pow(eq.mag - 4, 2) * 1.5;
             const currentRad = Math.min(ageH * waveSpeed, maxRad);
             const opacity = Math.max(0, 0.5 * (1 - currentRad / maxRad));
             if (currentRad > 0.2 && opacity > 0.02) {
-                const ringPts = greatCirclePoints(eq.lat, eq.lon, currentRad, 60);
-                layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts),
-                    new THREE.LineBasicMaterial({ color: col, transparent: true, opacity })));
-            }
-            if (ageH < 2) {
-                eqWaves.push({ lat: eq.lat, lon: eq.lon, mag: eq.mag, startTime: eq.time, color: col.clone(), maxRad, waveSpeed });
+                const positions = greatCircleDegrees(eq.lat, eq.lon, currentRad);
+                ds.entities.add({
+                    polyline: {
+                        positions: Cesium.Cartesian3.fromDegreesArray(positions),
+                        width: 1.5,
+                        material: new Cesium.ColorMaterialProperty(color.withAlpha(opacity)),
+                        clampToGround: true,
+                    },
+                });
             }
         }
-
-        if (eq.mag >= 6.0) {
-            const glowGeo = new THREE.SphereGeometry(baseSize * 4, 12, 12);
-            const glow = new THREE.Mesh(glowGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.08 + (eq.mag - 6) * 0.03 }));
-            glow.position.copy(pos);
-            layer.add(glow);
-        }
-    });
+    }
     document.getElementById('st-eqs').textContent = data.earthquakes.length;
 }
 
-function animateWaves() {
-    clearLayer('eq-waves');
-    const now = Date.now(), layer = getLayer('eq-waves');
-    for (const w of eqWaves) {
-        const ageH = (now - w.startTime) / 3600000, rad = ageH * w.waveSpeed;
-        if (rad > w.maxRad || rad < 0.1) continue;
-        const opacity = 0.6 * (1 - rad / w.maxRad);
-        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(greatCirclePoints(w.lat, w.lon, rad, 80)),
-            new THREE.LineBasicMaterial({ color: w.color, transparent: true, opacity: Math.max(0, opacity) })));
-        const rad2 = rad * 0.6;
-        if (rad2 > 0.1) {
-            layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(greatCirclePoints(w.lat, w.lon, rad2, 80)),
-                new THREE.LineBasicMaterial({ color: w.color, transparent: true, opacity: opacity * 0.4 })));
+function greatCircleDegrees(lat, lon, radiusDeg, nPts = 120) {
+    const slat = lat * Math.PI / 180, slon = lon * Math.PI / 180, rd = radiusDeg * Math.PI / 180;
+    const pts = [];
+    for (let i = 0; i <= nPts; i++) {
+        const a = (i / nPts) * 2 * Math.PI;
+        const lat2 = Math.asin(Math.sin(slat) * Math.cos(rd) + Math.cos(slat) * Math.sin(rd) * Math.cos(a));
+        const lon2 = slon + Math.atan2(Math.sin(a) * Math.sin(rd) * Math.cos(slat), Math.cos(rd) - Math.sin(slat) * Math.sin(lat2));
+        pts.push(lon2 * 180 / Math.PI, lat2 * 180 / Math.PI);
+    }
+    return pts;
+}
+
+// ============================================================
+// JELLY BALL ZONES
+// ============================================================
+async function updateJellyBall(data) {
+    const ds = await getDataSource('jelly-ball');
+    ds.entities.removeAll();
+    if (!data?.zones) return;
+
+    // Only draw key zones (eye, wavefront, antipodal) to reduce clutter
+    const keyZones = ['eye', 'wavefront', 'antipodal'];
+    for (const zone of data.zones) {
+        if (!keyZones.includes(zone.name)) continue;
+        const positions = greatCircleDegrees(data.lat, data.lon, zone.radius_deg);
+        const color = Cesium.Color.fromCssColorString(zone.color);
+        ds.entities.add({
+            polyline: {
+                positions: Cesium.Cartesian3.fromDegreesArray(positions),
+                width: zone.name === 'wavefront' ? 2.5 : 1.5,
+                material: new Cesium.ColorMaterialProperty(color.withAlpha(0.4)),
+                clampToGround: true,
+            },
+        });
+        // Label at top of ring
+        const labelPt = greatCircleDegrees(data.lat, data.lon, zone.radius_deg, 4);
+        // Pick the northernmost point (index 2,3 = lon,lat of second point)
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(labelPt[2], labelPt[3], 30000),
+            label: {
+                text: `${zone.name} ${zone.ratio}x`,
+                font: '9px monospace',
+                fillColor: color,
+                pixelOffset: new Cesium.Cartesian2(0, -6),
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                scale: 0.7,
+            },
+        });
+    }
+}
+
+// ============================================================
+// SUBSOLAR POINT + TERMINATOR
+// ============================================================
+let subsolarEntity = null;
+let antipodalEntity = null;
+
+async function updateSubsolar(data) {
+    const ds = await getDataSource('subsolar');
+    ds.entities.removeAll();
+    if (!data) return;
+
+    // Subsolar point marker
+    subsolarEntity = ds.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(data.lon, data.lat, 50000),
+        point: {
+            pixelSize: 18,
+            color: Cesium.Color.YELLOW,
+            outlineColor: Cesium.Color.ORANGE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+            text: 'SUBSOLAR',
+            font: '10px monospace',
+            fillColor: Cesium.Color.YELLOW,
+            style: Cesium.LabelStyle.FILL,
+            pixelOffset: new Cesium.Cartesian2(0, -18),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+    });
+
+    // Vertical ray from subsolar point
+    ds.entities.add({
+        polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                data.lon, data.lat, 0,
+                data.lon, data.lat, 500000,
+            ]),
+            width: 1.5,
+            material: new Cesium.ColorMaterialProperty(Cesium.Color.YELLOW.withAlpha(0.3)),
+        },
+    });
+
+    // Antipodal point
+    const antiLon = data.lon > 0 ? data.lon - 180 : data.lon + 180;
+    antipodalEntity = ds.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(antiLon, -data.lat, 10000),
+        point: {
+            pixelSize: 10,
+            color: new Cesium.Color(0.8, 0.5, 0.8, 0.5),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+    });
+
+    // Update sun position for lighting
+    const sunPos = Cesium.Cartesian3.fromDegrees(data.lon, data.lat, 149597870700);
+    viewer.scene.light = new Cesium.DirectionalLight({
+        direction: Cesium.Cartesian3.normalize(
+            Cesium.Cartesian3.negate(sunPos, new Cesium.Cartesian3()),
+            new Cesium.Cartesian3()
+        ),
+        intensity: 2.0,
+    });
+}
+
+async function updateTerminator(data) {
+    const ds = await getDataSource('terminator');
+    ds.entities.removeAll();
+    if (!data) return;
+
+    const positions = greatCircleDegrees(data.lat, data.lon, 90, 180);
+    ds.entities.add({
+        polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArray(positions),
+            width: 2,
+            material: new Cesium.ColorMaterialProperty(
+                Cesium.Color.fromCssColorString('#ff6600').withAlpha(0.35)
+            ),
+            clampToGround: true,
+        },
+    });
+}
+
+// ============================================================
+// GEOMAGNETIC DIPOLE FIELD LINES
+// ============================================================
+// WMM 2025 geomagnetic pole: 80.6°N, 72.7°W (north dip pole)
+// Dipole tilt = 9.7° from rotation axis
+const DIPOLE_NORTH = { lat: 80.6, lon: -72.7 };
+const DIPOLE_SOUTH = { lat: -80.6, lon: 107.3 };
+const DEG = Math.PI / 180;
+
+// Rotate a point from dipole coordinates (colat θ_d, lon φ_d) to geographic
+// Dipole axis points toward (poleLat, poleLon)
+function dipoleToGeo(thetaD, phiD, poleLat, poleLon) {
+    const cosP = Math.cos(poleLat * DEG), sinP = Math.sin(poleLat * DEG);
+    // Direction cosines in dipole frame
+    const x = Math.sin(thetaD) * Math.cos(phiD);
+    const y = Math.sin(thetaD) * Math.sin(phiD);
+    const z = Math.cos(thetaD);
+    // Rotate around Y by (90° - poleLat) to tilt dipole axis to geographic
+    const tilt = (90 - poleLat) * DEG;
+    const ct = Math.cos(tilt), st = Math.sin(tilt);
+    const xg = x * ct + z * st;
+    const yg = y;
+    const zg = -x * st + z * ct;
+    // Convert to geographic lat/lon, then add pole longitude offset
+    const geoLat = Math.asin(zg) / DEG;
+    const geoLon = poleLon + Math.atan2(yg, xg) / DEG;
+    return { lat: geoLat, lon: ((geoLon + 540) % 360) - 180 };
+}
+
+async function buildMagneticField(subsolarData) {
+    const ds = await getDataSource('magnetic-field');
+    ds.entities.removeAll();
+
+    const Bz = currentBz;
+    // Magnetopause standoff: Shue et al. 1998 model
+    // r0 = 11.4 * (Bz_nT)^(1/6.6) Re for Dp ~ 2 nPa; simplified:
+    const Dp = (swDensity || 5) * 1.67e-27 * ((swSpeed || 400) * 1e3) ** 2 * 1e9; // nPa
+    const r0_Re = 11.4 * Math.pow(Math.max(0.5, Dp), -1 / 6.6);
+    const compRatio = Math.min(1.0, Math.max(0.4, r0_Re / 11.4));
+    const RE = 6371000; // meters
+
+    // Field line colors
+    const innerColor = Cesium.Color.fromCssColorString('#00ccff'); // L=2-3
+    const outerColor = Cesium.Color.fromCssColorString('#336699'); // L=4-6
+
+    // Draw dipole field lines: r = L sin²θ in dipole coordinates
+    // 6 meridional planes (φ_d = 0, 60, 120, ...) × 4 L-shells
+    const nPlanes = 6;
+    const Lshells = [2.0, 3.0, 4.5, 6.0];
+
+    for (let p = 0; p < nPlanes; p++) {
+        const phiD = (p / nPlanes) * 2 * Math.PI;
+        for (let si = 0; si < Lshells.length; si++) {
+            const L = Lshells[si];
+            const pts = []; // [lon, lat, alt, ...]
+            // Trace from north foot to south foot
+            // Foot colatitude: sin²θ_foot = 1/L → θ_foot = arcsin(1/√L)
+            const thetaFoot = Math.asin(1 / Math.sqrt(L));
+            const nPts = 80;
+            for (let j = 0; j <= nPts; j++) {
+                const theta = thetaFoot + (Math.PI - 2 * thetaFoot) * (j / nPts);
+                const sinT = Math.sin(theta);
+                const r = L * sinT * sinT; // dipole equation
+                if (r < 1.0) continue;
+                const alt = (r - 1.0) * RE;
+
+                // Get geographic position
+                const geo = dipoleToGeo(theta, phiD, DIPOLE_NORTH.lat, DIPOLE_NORTH.lon);
+
+                // Solar wind compression: compress dayside, stretch nightside
+                let adjAlt = alt;
+                if (subsolarData) {
+                    const dLon = ((geo.lon - subsolarData.lon + 540) % 360) - 180;
+                    const dayFrac = Math.cos(dLon * DEG); // +1 = subsolar, -1 = antisolar
+                    if (dayFrac > 0) {
+                        // Dayside: compress by magnetopause standoff
+                        adjAlt *= compRatio;
+                        // Cap at magnetopause
+                        const rMpause = r0_Re * RE * (1 - dayFrac * 0.3);
+                        if (adjAlt + RE > rMpause) adjAlt = rMpause - RE;
+                    } else {
+                        // Nightside: stretch into magnetotail
+                        adjAlt *= 1 + (1 - compRatio) * 0.6 * (-dayFrac);
+                    }
+                }
+
+                if (adjAlt > 0 && adjAlt < 80000000) {
+                    pts.push(geo.lon, geo.lat, adjAlt);
+                }
+            }
+
+            if (pts.length >= 9) {
+                const color = si < 2 ? innerColor : outerColor;
+                const alpha = si < 2 ? 0.5 : 0.25;
+                ds.entities.add({
+                    polyline: {
+                        positions: Cesium.Cartesian3.fromDegreesArrayHeights(pts),
+                        width: si < 2 ? 2.0 : 1.2,
+                        material: new Cesium.ColorMaterialProperty(color.withAlpha(alpha)),
+                    },
+                });
+            }
+        }
+    }
+
+    // Geomagnetic pole markers
+    for (const pole of [DIPOLE_NORTH, DIPOLE_SOUTH]) {
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(pole.lon, pole.lat, 5000),
+            point: { pixelSize: 8, color: Cesium.Color.CYAN, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+            label: {
+                text: pole.lat > 0 ? 'N mag' : 'S mag',
+                font: '9px monospace', fillColor: Cesium.Color.CYAN,
+                pixelOffset: new Cesium.Cartesian2(12, 0),
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+        });
+    }
+
+    // ---- AURORA OVALS ----
+    // Feldstein model: oval centered on geomagnetic pole, equatorward boundary
+    // depends on Kp. Oval is NOT a circle — wider on nightside (magnetic midnight).
+    // Equatorward boundary: Λ = 67° - 3° × Kp  (Starkov 1994)
+    const kp = currentKp || 2;
+    const auroraEqward = 67 - 3 * Math.min(kp, 9); // geomagnetic colatitude
+    const auroraPoleward = auroraEqward + 5 + kp * 0.5; // ~5° wide band
+
+    for (const isNorth of [true, false]) {
+        const pole = isNorth ? DIPOLE_NORTH : DIPOLE_SOUTH;
+        const sign = isNorth ? 1 : -1;
+
+        for (const [colatBand, alpha, width] of [[auroraEqward, 0.5, 3], [auroraPoleward, 0.2, 1.5]]) {
+            const pts = [];
+            for (let i = 0; i <= 120; i++) {
+                const phiD = (i / 120) * 2 * Math.PI; // magnetic local time
+                // Nightside (φ_d ~ π) oval extends 3-5° more equatorward
+                const nightShift = 3 * Math.max(0, -Math.cos(phiD));
+                const colat = (colatBand + nightShift) * DEG;
+                const geo = dipoleToGeo(
+                    isNorth ? colat : Math.PI - colat,
+                    phiD, DIPOLE_NORTH.lat, DIPOLE_NORTH.lon
+                );
+                pts.push(geo.lon, geo.lat);
+            }
+            ds.entities.add({
+                polyline: {
+                    positions: Cesium.Cartesian3.fromDegreesArray(pts),
+                    width: width,
+                    material: new Cesium.PolylineGlowMaterialProperty({
+                        glowPower: 0.25,
+                        color: Cesium.Color.fromCssColorString('#44ff88').withAlpha(alpha * (0.3 + stormLevel * 0.7)),
+                    }),
+                    clampToGround: true,
+                },
+            });
         }
     }
 }
 
-// ===== JELLY BALL ZONES =====
-function updateJellyBall(data) {
-    clearLayer('jelly-ball');
-    if (!data?.zones) return;
-    const layer = getLayer('jelly-ball');
-    data.zones.forEach(zone => {
-        const col = parseInt(zone.color.replace('#', ''), 16);
-        const pts = greatCirclePoints(data.lat, data.lon, zone.radius_deg);
-        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.35 })));
+// ============================================================
+// ANIMATED SOLAR WIND — smooth flowing streams around magnetosphere
+// ============================================================
+// Visual-scale compression: real magnetopause is ~10 Re but we draw
+// at ~3-5 Re so Earth stays prominent. Physics is still correct
+// relative to itself; only the absolute scale is compressed.
+
+let swAnimRunning = false;
+let swSubsolar = null;
+let swPhase = 0; // global animation phase
+
+async function buildSolarWindFlow(subsolarData) {
+    const ds = await getDataSource('solar-wind');
+    ds.entities.removeAll();
+    if (!subsolarData) return;
+    swSubsolar = subsolarData;
+
+    const ssLon = subsolarData.lon;
+    const ssLat = subsolarData.lat;
+    const speed = swSpeed || 400;
+    const density = swDensity || 5;
+    const Bz = currentBz || 0;
+    const RE = 6371000; // meters
+
+    // Visual scale: magnetopause at ~2.5 Re altitude for good proportions
+    const mpAlt = RE * 2.5;  // ~16,000 km altitude
+    const bowAlt = mpAlt * 1.3;
+
+    // Speed-based color
+    const speedFrac = Math.min(1, Math.max(0, (speed - 300) / 400));
+    const streamColor = Cesium.Color.fromHsl(0.10 - speedFrac * 0.06, 0.9, 0.55, 0.45);
+
+    // --- Smooth stream lines ---
+    // 10 streams spread in latitude, each a smooth arc from upstream to downstream
+    const nStreams = 10;
+    for (let i = 0; i < nStreams; i++) {
+        const latOffset = (i / (nStreams - 1) - 0.5) * 70; // ±35° spread from subsolar
+
+        // Build a smooth stream path: approach from far, curve at bow shock, flow to tail
+        const pts = [];
+        const nPts = 40;
+        for (let j = 0; j < nPts; j++) {
+            const t = j / (nPts - 1); // 0=far upstream, 1=far downstream
+
+            // Longitude arc: upstream (+80°) → subsolar (0°) → downstream (-120°)
+            const lonArc = ssLon + 80 - t * 200;
+
+            // Altitude: high upstream, dips toward bow shock, rises at flanks
+            // Smooth parabolic profile peaking at bow shock distance
+            const approachT = Math.max(0, 1 - t * 2); // 1 at upstream, 0 at subsolar
+            const flankT = Math.max(0, t * 2 - 1);     // 0 at subsolar, 1 at tail
+            const coreT = 1 - Math.abs(t - 0.4) * 2.5; // peaks near bow shock
+
+            // Streams far from center pass high, center streams dip close
+            const centerDist = Math.abs(latOffset) / 35; // 0=center, 1=edge
+            const baseAlt = bowAlt * (0.8 + centerDist * 0.6);
+            const dip = (1 - centerDist) * bowAlt * 0.3 * Math.max(0, coreT);
+            const alt = baseAlt + approachT * bowAlt * 0.5 - dip + flankT * bowAlt * 0.2;
+
+            // Latitude: slight curve toward equator at flanks
+            const lat = ssLat + latOffset * (1 + flankT * 0.3);
+
+            pts.push(lonArc, lat, Math.max(RE * 0.5, alt));
+        }
+
+        const width = 2.0 - Math.abs(latOffset) / 35 * 0.8; // thicker near center
+        ds.entities.add({
+            polyline: {
+                positions: Cesium.Cartesian3.fromDegreesArrayHeights(pts),
+                width: width,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.15,
+                    color: streamColor,
+                }),
+            },
+        });
+    }
+
+    // --- Bow shock arc ---
+    const bowColor = stormLevel > 0.5
+        ? Cesium.Color.fromCssColorString('#ff5533').withAlpha(0.5)
+        : Cesium.Color.fromCssColorString('#ff8844').withAlpha(0.4);
+
+    // Horizontal arc
+    const bowPts = [];
+    for (let i = -70; i <= 70; i += 3) {
+        const angle = i * DEG;
+        const alt = bowAlt / Math.max(0.3, Math.cos(angle * 0.7));
+        const lat = ssLat + Math.sin(angle) * 45;
+        bowPts.push(ssLon + Math.cos(angle) * 15, lat, alt);
+    }
+    ds.entities.add({
+        polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArrayHeights(bowPts),
+            width: 2.5,
+            material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.25, color: bowColor }),
+        },
     });
+
+    // Vertical arc (rotated 90°)
+    const bowPts2 = [];
+    for (let i = -70; i <= 70; i += 3) {
+        const angle = i * DEG;
+        const alt = bowAlt / Math.max(0.3, Math.cos(angle * 0.7));
+        const lat = ssLat + Math.cos(angle) * 5;
+        const extraAlt = Math.sin(angle) * bowAlt * 0.8;
+        bowPts2.push(ssLon, lat, alt + extraAlt);
+    }
+    ds.entities.add({
+        polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArrayHeights(bowPts2),
+            width: 2,
+            material: new Cesium.PolylineGlowMaterialProperty({
+                glowPower: 0.2, color: bowColor.withAlpha(0.3),
+            }),
+        },
+    });
+
+    // --- IMF Bz + solar wind data label ---
+    const bzColor = Bz < 0
+        ? Cesium.Color.fromCssColorString('#ff4466')
+        : Cesium.Color.fromCssColorString('#4488ff');
+    ds.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(ssLon + 20, ssLat, bowAlt * 1.1),
+        label: {
+            text: `SW: ${speed.toFixed(0)} km/s  n=${density.toFixed(1)}/cc\nBz ${Bz > 0 ? '+' : ''}${Bz.toFixed(1)} nT  ${Bz < -5 ? 'RECONNECTING' : Bz < 0 ? 'southward' : 'northward'}`,
+            font: '10px monospace',
+            fillColor: bzColor,
+            pixelOffset: new Cesium.Cartesian2(0, 0),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            showBackground: true,
+            backgroundColor: Cesium.Color.BLACK.withAlpha(0.6),
+        },
+    });
+
+    // --- Magnetotail field lines (stretched on nightside) ---
+    const tailColor = Cesium.Color.fromCssColorString('#224488').withAlpha(0.2);
+    for (let i = -2; i <= 2; i++) {
+        const latOff = i * 8;
+        const tailPts = [];
+        for (let j = 0; j <= 20; j++) {
+            const t = j / 20;
+            const lon = ssLon - 180 + (1 - t) * 80; // antisolar, stretching away
+            const alt = RE * (0.5 + t * 2.5) + Math.abs(latOff) * RE * 0.05;
+            tailPts.push(((lon + 540) % 360) - 180, ssLat * -0.2 + latOff, alt);
+        }
+        ds.entities.add({
+            polyline: {
+                positions: Cesium.Cartesian3.fromDegreesArrayHeights(tailPts),
+                width: 1,
+                material: new Cesium.ColorMaterialProperty(tailColor),
+            },
+        });
+    }
 }
 
-// ===== SUBSOLAR POINT =====
-function updateSubsolar(data) {
-    clearLayer('subsolar');
-    if (!data) return;
-    const layer = getLayer('subsolar');
-    const geo = new THREE.SphereGeometry(0.015, 16, 16);
-    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffff00 }));
-    m.position.copy(ll2v(data.lat, data.lon, R * 1.008));
-    m.name = 'subsolar-pulse';
-    layer.add(m);
-    layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([ll2v(data.lat, data.lon, R * 1.008), ll2v(data.lat, data.lon, R * 1.15)]),
-        new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.3 })));
-    const antiLon = data.lon > 0 ? data.lon - 180 : data.lon + 180;
-    const anti = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 12), new THREE.MeshBasicMaterial({ color: 0xcc88cc, transparent: true, opacity: 0.5 }));
-    anti.position.copy(ll2v(-data.lat, antiLon, R * 1.005));
-    layer.add(anti);
-    sunLight.position.copy(ll2v(data.lat, data.lon, 5));
+// ============================================================
+// TELLURIC CURRENTS (ocean + fault, Kp-scaled)
+// ============================================================
+async function buildTelluricCurrents(fieldData) {
+    const ds = await getDataSource('telluric');
+    ds.entities.removeAll();
+
+    const kp = fieldData?.inputs?.kp || currentKp || 2;
+    const jLive = fieldData?.telluric_j?.value || 2.0;
+
+    // Ocean v×B telluric currents: detailed paths from physical oceanography
+    // Intensities are baseline quiet-time J (mA/km) from Malin & Barraclough 1991
+    // Coordinates trace actual current axes from satellite altimetry + drifter data
+    const telluricPaths = [
+        // ---- ATLANTIC GYRE ----
+        // Gulf Stream: Florida Strait → Cape Hatteras → meander zone → Grand Banks separation
+        // Peak transport ~30 Sv at Straits, v×B generates ~270 mA/km
+        { name: 'Gulf Stream', baseline: 270, color: '#ff4444', path: [
+            [-80.0,23.5],[-80.2,24.5],[-80.1,25.8],[-79.8,27.0],  // Florida Strait
+            [-79.5,28.5],[-79.7,29.8],[-80.0,30.5],[-79.8,31.2],  // hugs Florida coast
+            [-79.2,31.8],[-78.5,32.5],[-77.8,33.2],[-76.5,34.0],  // Georgia Bight
+            [-75.5,34.8],[-74.8,35.5],[-74.0,36.0],[-73.0,36.8],  // Cape Hatteras separation
+            [-71.5,37.5],[-69.5,38.5],[-67.0,39.5],[-64.0,40.0],  // meander zone (eddies)
+            [-60.0,40.5],[-56.0,41.5],[-52.0,42.5],[-49.0,43.5],  // Grand Banks
+            [-45.0,44.5],[-42.0,46.0],[-38.0,47.5],[-34.0,48.5],  // mid-Atlantic transition
+        ]},
+        // North Atlantic Drift → Norwegian Current
+        { name: 'N. Atlantic Drift', baseline: 80, color: '#ff8844', path: [
+            [-34.0,48.5],[-28.0,50.0],[-22.0,51.5],[-18.0,52.5],  // from Gulf Stream terminus
+            [-14.0,53.5],[-10.0,55.0],[-8.0,56.5],[-5.0,58.0],    // west of Ireland/Scotland
+            [-2.0,59.5],[2.0,61.0],[5.0,62.5],[7.0,64.0],          // Norwegian Sea
+            [10.0,66.0],[13.0,68.0],[15.0,70.0],                    // toward Barents Sea
+        ]},
+        // Canary Current (southward return, eastern boundary)
+        { name: 'Canary Current', baseline: 25, color: '#ff9966', path: [
+            [-10.0,43.0],[-11.0,40.0],[-12.0,37.0],[-13.0,34.0],
+            [-14.5,31.0],[-16.0,28.0],[-17.5,25.0],[-18.0,22.0],
+            [-18.5,19.0],[-18.0,16.0],[-17.0,13.5],
+        ]},
+        // North Equatorial Current (westward)
+        { name: 'N. Equatorial (Atl)', baseline: 20, color: '#ffaa66', path: [
+            [-17.0,13.5],[-22.0,12.0],[-28.0,11.0],[-35.0,10.5],
+            [-42.0,10.0],[-48.0,10.5],[-54.0,11.5],[-58.0,12.5],
+        ]},
+        // Brazil Current (western boundary, southward)
+        { name: 'Brazil Current', baseline: 35, color: '#ff8844', path: [
+            [-35.0,-5.0],[-36.5,-8.0],[-37.5,-11.0],[-38.0,-14.0],
+            [-38.5,-17.0],[-39.5,-20.0],[-41.0,-23.0],[-43.0,-25.0],
+            [-46.0,-28.0],[-49.0,-31.0],[-51.0,-33.5],[-52.0,-36.0],
+        ]},
+        // ---- PACIFIC GYRE ----
+        // Kuroshio: Taiwan → Japan coast → Kuroshio Extension
+        // Peak transport ~55 Sv, v×B ~ 60 mA/km
+        { name: 'Kuroshio', baseline: 60, color: '#ff8844', path: [
+            [121.5,18.0],[122.0,20.0],[122.5,22.0],[123.0,24.0],   // east of Taiwan
+            [124.5,25.5],[126.0,27.0],[128.0,28.5],[130.0,30.0],   // Ryukyu Islands
+            [131.5,31.0],[133.0,32.0],[134.5,33.0],[136.0,33.5],   // south of Japan
+            [137.5,34.0],[139.5,34.5],[141.0,35.0],[142.5,35.5],   // Enshu-nada
+            [144.0,36.0],[146.0,36.0],[148.0,35.5],[150.0,35.0],   // Kuroshio Extension
+            [153.0,35.0],[156.0,35.5],[160.0,36.0],[165.0,37.0],   // meander/eddy zone
+            [170.0,38.0],[175.0,39.0],[180.0,40.0],
+        ]},
+        // California Current (southward, eastern boundary)
+        { name: 'California Current', baseline: 15, color: '#ffaa66', path: [
+            [-126.0,48.0],[-126.0,45.0],[-125.5,42.0],[-124.5,39.0],
+            [-123.0,36.5],[-121.5,34.5],[-120.0,32.5],[-118.5,30.5],
+            [-117.0,28.0],[-116.0,25.0],[-115.0,22.0],
+        ]},
+        // North Equatorial Current (Pacific, westward)
+        { name: 'N. Equatorial (Pac)', baseline: 18, color: '#ffaa66', path: [
+            [-115.0,22.0],[-120.0,18.0],[-130.0,15.0],[-140.0,13.0],
+            [-150.0,12.0],[-160.0,11.5],[-170.0,11.0],[180.0,10.5],
+            [170.0,10.0],[160.0,10.0],[150.0,11.0],[140.0,12.0],
+            [130.0,13.5],[125.0,15.0],
+        ]},
+        // Humboldt/Peru Current (cold, upwelling, northward along S. America)
+        { name: 'Humboldt Current', baseline: 30, color: '#ff9966', path: [
+            [-75.0,-42.0],[-74.0,-38.0],[-73.5,-34.0],[-73.0,-30.0],
+            [-72.0,-26.0],[-71.5,-22.0],[-71.5,-18.0],[-72.0,-14.0],
+            [-76.0,-10.0],[-80.0,-6.0],[-82.0,-3.0],[-82.5,0.0],
+        ]},
+        // East Australian Current
+        { name: 'E. Australian', baseline: 35, color: '#ff8844', path: [
+            [155.0,-15.0],[154.5,-18.0],[154.0,-20.0],[153.5,-23.0],
+            [153.5,-25.0],[153.5,-27.5],[154.0,-30.0],[154.5,-32.0],
+            [155.0,-34.0],[156.0,-36.0],[157.5,-37.5],[160.0,-38.5],
+        ]},
+        // ---- INDIAN OCEAN ----
+        // Agulhas Current: Mozambique Channel → south Africa → retroflection
+        // Peak ~70 Sv, one of the strongest western boundary currents
+        { name: 'Agulhas', baseline: 50, color: '#ff8844', path: [
+            [40.5,-11.0],[41.0,-15.0],[40.5,-18.0],[39.0,-21.0],   // Mozambique Channel
+            [37.0,-24.0],[35.5,-26.5],[34.0,-28.0],[32.0,-30.0],   // hugs coast
+            [30.5,-31.5],[29.0,-33.0],[27.0,-34.0],[25.0,-34.5],   // southeast SA
+            [23.0,-35.0],[21.0,-35.5],[19.5,-36.0],[18.5,-36.5],   // Cape of Good Hope
+            [19.0,-37.5],[20.5,-38.5],[23.0,-39.0],[26.0,-39.0],   // retroflection loop
+            [29.0,-38.0],[31.0,-36.5],                               // back east
+        ]},
+        // Indonesia Throughflow: Pacific→Indian through narrow straits
+        // Only ~15 Sv but through narrow channels = high v = high J
+        { name: 'Indonesia Throughflow', baseline: 45, color: '#ff6644', path: [
+            [127.0,4.0],[126.5,2.5],[126.0,1.5],[125.5,0.5],       // Molucca Sea
+            [124.5,-0.5],[123.5,-1.5],[122.0,-2.5],[121.0,-3.5],   // Banda Sea
+            [119.5,-5.0],[118.0,-6.5],[116.5,-8.0],[115.0,-8.5],   // Lombok/Savu straits
+            [113.0,-9.0],[111.0,-10.0],[109.0,-11.0],[107.0,-11.5], // into Indian Ocean
+        ]},
+        // Somali Current (seasonal, monsoon-driven)
+        { name: 'Somali Current', baseline: 40, color: '#ff8844', path: [
+            [43.0,-2.0],[44.0,0.0],[45.5,3.0],[47.0,5.5],
+            [49.0,8.0],[50.5,10.0],[51.5,11.5],[51.0,13.0],
+        ]},
+        // ---- SOUTHERN OCEAN ----
+        // Antarctic Circumpolar Current: follows actual meandering path
+        // Largest current on Earth by volume (~130 Sv), v×B ~ 40 mA/km
+        { name: 'Antarctic Circumpolar', baseline: 40, color: '#ff6644', path: [
+            [-70.0,-56.0],[-65.0,-56.5],[-60.0,-57.5],             // Drake Passage
+            [-55.0,-54.0],[-50.0,-50.0],[-45.0,-48.0],             // Falkland/Malvinas
+            [-40.0,-47.0],[-35.0,-46.5],[-30.0,-46.0],             // mid-Atlantic Ridge
+            [-25.0,-46.5],[-20.0,-47.0],[-15.0,-47.5],
+            [-10.0,-48.0],[-5.0,-48.5],[0.0,-49.0],[5.0,-49.5],
+            [10.0,-49.0],[15.0,-48.0],[20.0,-47.0],[25.0,-46.0],   // south of Africa
+            [30.0,-46.5],[40.0,-47.0],[50.0,-48.0],[60.0,-49.0],
+            [70.0,-50.0],[80.0,-50.5],[90.0,-51.0],[100.0,-52.0],  // south Indian Ocean
+            [110.0,-53.0],[120.0,-54.0],[130.0,-55.0],
+            [140.0,-55.5],[145.0,-56.0],[150.0,-57.0],             // south of Australia
+            [155.0,-58.0],[160.0,-59.0],[165.0,-60.0],
+            [170.0,-61.0],[175.0,-62.0],[180.0,-62.5],             // south Pacific
+            [-175.0,-63.0],[-170.0,-63.5],[-165.0,-63.0],
+            [-160.0,-62.5],[-155.0,-62.0],[-150.0,-61.5],
+            [-140.0,-61.0],[-130.0,-60.5],[-120.0,-60.0],
+            [-110.0,-59.5],[-100.0,-59.0],[-90.0,-58.5],
+            [-80.0,-58.0],[-75.0,-57.5],[-70.0,-56.0],             // back to Drake
+        ]},
+        // ---- FAULT ZONE CONDUCTORS ----
+        // East African Rift: fault gouge + hydrothermal fluids = conductor
+        { name: 'E. African Rift', baseline: 15, color: '#ffaa44', path: [
+            [36.5,12.0],[36.8,10.0],[37.0,8.0],[36.8,6.0],[36.2,4.0],
+            [35.5,2.0],[35.0,0.0],[34.5,-1.5],[33.5,-4.0],[32.5,-6.5],
+            [31.5,-9.0],[30.5,-11.0],[29.5,-13.0],[29.0,-15.0],
+        ]},
+        // San Andreas Fault
+        { name: 'San Andreas', baseline: 12, color: '#ffaa44', path: [
+            [-115.5,32.5],[-116.0,33.0],[-117.0,34.0],[-117.8,34.5],
+            [-118.5,34.8],[-119.5,35.2],[-120.5,35.8],[-121.0,36.2],
+            [-121.5,36.8],[-122.0,37.5],[-122.5,38.0],[-123.0,38.5],
+            [-123.3,39.0],[-123.5,40.0],
+        ]},
+    ];
+
+    // Storm scaling: telluric J ~ exp(0.4 × Kp) from the backend model
+    const stormScale = Math.exp(0.4 * kp) / Math.exp(0.4 * 2); // ratio vs Kp=2 baseline
+
+    for (const path of telluricPaths) {
+        const J = path.baseline * stormScale;
+        const width = Math.max(1.5, Math.min(6, J / 50));
+        const alpha = Math.min(0.8, 0.2 + J / 300);
+        const color = Cesium.Color.fromCssColorString(path.color);
+
+        const flat = path.path.flatMap(([lon, lat]) => [lon, lat]);
+        ds.entities.add({
+            polyline: {
+                positions: Cesium.Cartesian3.fromDegreesArray(flat),
+                width, clampToGround: true,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.15 + J / 500,
+                    color: color.withAlpha(alpha),
+                }),
+            },
+            properties: { _type: 'telluric', name: path.name, j_mA_km: J.toFixed(1) },
+        });
+
+        const mid = path.path[Math.floor(path.path.length / 2)];
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(mid[0], mid[1], 20000),
+            label: {
+                text: `${path.name}\n${J.toFixed(0)} mA/km`,
+                font: '9px monospace', fillColor: color,
+                pixelOffset: new Cesium.Cartesian2(0, -8),
+                disableDepthTestDistance: Number.POSITIVE_INFINITY, scale: 0.8,
+                showBackground: true, backgroundColor: Cesium.Color.BLACK.withAlpha(0.5),
+            },
+        });
+    }
 }
 
-function updateTerminator(data) {
-    clearLayer('terminator');
-    if (!data) return;
-    getLayer('terminator').add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(greatCirclePoints(data.lat, data.lon, 90, 180)),
-        new THREE.LineBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.2 })));
-}
+// Build initial layers (will update with real data on first poll)
+buildMagneticField(null);
+buildTelluricCurrents(null);
 
-// ===== PLATE BOUNDARIES (GeoJSON-labeled) =====
-const BOUNDARY_COLORS = {
-    divergent: 0x44aaff,
-    convergent: 0xff6644,
-    transform: 0xffaa44,
-    unknown: 0x445566,
-};
-
+// ============================================================
+// PLATE BOUNDARIES (GeoJSON)
+// ============================================================
 async function loadPlates() {
     try {
         const resp = await fetch(`${API}/plates`);
         const geojson = await resp.json();
-        clearLayer('plates');
-        const layer = getLayer('plates');
+        const ds = await getDataSource('plates');
+        ds.entities.removeAll();
         const legendEl = document.getElementById('plate-legend');
         const namesUsed = new Set();
 
-        if (!geojson.features) {
-            // Fallback: old plates.json format
-            const segs = geojson;
-            const mat = new THREE.LineBasicMaterial({ color: 0x445566, transparent: true, opacity: 0.35 });
-            for (const seg of segs) {
-                if (seg.length < 2) continue;
-                const pts = [];
-                for (let i = 0; i < seg.length; i++) {
-                    if (i > 0 && Math.abs(seg[i][0] - seg[i - 1][0]) > 90) {
-                        if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
-                        pts.length = 0;
-                    }
-                    pts.push(ll2v(seg[i][1], seg[i][0], R * 1.0005));
-                }
-                if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
-            }
-            return;
-        }
+        if (!geojson.features) return;
 
         for (const feature of geojson.features) {
             const props = feature.properties || {};
             const coords = feature.geometry?.coordinates || [];
             if (coords.length < 2) continue;
 
-            const btype = props.boundary_type || 'unknown';
-            const color = new THREE.Color(props.color || '#445566');
-            const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.45 });
-
-            const pts = [];
+            const color = Cesium.Color.fromCssColorString(props.color || '#445566');
+            // Split at antimeridian crossings
+            let segment = [];
             for (let i = 0; i < coords.length; i++) {
                 if (i > 0 && Math.abs(coords[i][0] - coords[i - 1][0]) > 90) {
-                    if (pts.length >= 2) {
-                        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
-                        line.userData = { type: 'plate', name: props.name, boundary_type: btype };
-                        layer.add(line);
+                    if (segment.length >= 2) {
+                        const flat = segment.flatMap(c => [c[0], c[1]]);
+                        ds.entities.add({
+                            polyline: {
+                                positions: Cesium.Cartesian3.fromDegreesArray(flat),
+                                width: 1.5,
+                                material: new Cesium.ColorMaterialProperty(color.withAlpha(0.5)),
+                                clampToGround: true,
+                            },
+                            properties: { _type: 'plate', name: props.name, boundary_type: props.boundary_type },
+                        });
                     }
-                    pts.length = 0;
+                    segment = [];
                 }
-                pts.push(ll2v(coords[i][1], coords[i][0], R * 1.0005));
+                segment.push(coords[i]);
             }
-            if (pts.length >= 2) {
-                const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
-                line.userData = { type: 'plate', name: props.name, boundary_type: btype };
-                layer.add(line);
+            if (segment.length >= 2) {
+                const flat = segment.flatMap(c => [c[0], c[1]]);
+                ds.entities.add({
+                    polyline: {
+                        positions: Cesium.Cartesian3.fromDegreesArray(flat),
+                        width: 1.5,
+                        material: new Cesium.ColorMaterialProperty(color.withAlpha(0.5)),
+                        clampToGround: true,
+                    },
+                    properties: { _type: 'plate', name: props.name, boundary_type: props.boundary_type },
+                });
             }
-
             namesUsed.add(props.name);
         }
 
-        // Render plate legend
         if (legendEl) {
             const sorted = [...namesUsed].sort();
             legendEl.innerHTML = sorted.map(name => {
@@ -346,79 +982,156 @@ async function loadPlates() {
                 return `<span class="plate-tag"><span class="swatch" style="background:${color}"></span>${name} (${symbol})</span>`;
             }).join('');
         }
-
-        console.log(`Plates loaded: ${geojson.features.length} segments, ${namesUsed.size} named boundaries`);
-    } catch (e) {
-        console.warn('Plates:', e.message);
-        // Fallback to old plates.json
-        try {
-            const resp = await fetch('src/plates.json');
-            const segs = await resp.json();
-            const mat = new THREE.LineBasicMaterial({ color: 0x445566, transparent: true, opacity: 0.35 });
-            const layer = getLayer('plates');
-            for (const seg of segs) {
-                if (seg.length < 2) continue;
-                const pts = [];
-                for (let i = 0; i < seg.length; i++) {
-                    if (i > 0 && Math.abs(seg[i][0] - seg[i - 1][0]) > 90) {
-                        if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
-                        pts.length = 0;
-                    }
-                    pts.push(ll2v(seg[i][1], seg[i][0], R * 1.0005));
-                }
-                if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
-            }
-        } catch (e2) { console.warn('Plates fallback failed:', e2.message); }
-    }
+    } catch (e) { console.warn('Plates:', e.message); }
 }
 loadPlates();
 
-// ===== GEOJSON / KML LOADER =====
-function renderGeoJSON(geojson, layerName = 'geojson') {
-    const layer = getLayer(layerName);
-    const features = geojson.features || (geojson.geometry ? [geojson] : []);
+// ============================================================
+// MAGNETOMETER STATIONS
+// ============================================================
+async function updateMagnetometers(data) {
+    const ds = await getDataSource('magnetometers');
+    ds.entities.removeAll();
+    if (!data?.stations) return;
 
-    for (const feature of features) {
-        const geom = feature.geometry || feature;
-        const props = feature.properties || {};
-        const color = new THREE.Color(props.color || props.stroke || '#44cccc');
+    for (const st of data.stations) {
+        const color = st.network === 'USGS'
+            ? new Cesium.Color(0.8, 0.27, 0.8, 0.9)
+            : new Cesium.Color(0.27, 0.8, 0.8, 0.9);
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(st.lon, st.lat, 5000),
+            point: {
+                pixelSize: 8,
+                color: color,
+                outlineColor: Cesium.Color.WHITE.withAlpha(0.3),
+                outlineWidth: 1,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+            label: {
+                text: st.code || '',
+                font: '9px monospace',
+                fillColor: color,
+                pixelOffset: new Cesium.Cartesian2(0, -12),
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                scale: 0.8,
+            },
+            properties: { _type: 'magnetometer', ...st },
+        });
+    }
+}
 
-        if (geom.type === 'LineString') {
-            renderLineString(geom.coordinates, color, layer, props);
-        } else if (geom.type === 'MultiLineString') {
-            for (const line of geom.coordinates) renderLineString(line, color, layer, props);
-        } else if (geom.type === 'Polygon') {
-            for (const ring of geom.coordinates) renderLineString(ring, color, layer, props);
-        } else if (geom.type === 'MultiPolygon') {
-            for (const poly of geom.coordinates) for (const ring of poly) renderLineString(ring, color, layer, props);
-        } else if (geom.type === 'Point') {
-            const [lon, lat] = geom.coordinates;
-            const marker = new THREE.Mesh(new THREE.SphereGeometry(0.005, 8, 8), new THREE.MeshBasicMaterial({ color }));
-            marker.position.copy(ll2v(lat, lon, R * 1.003));
-            marker.userData = props;
-            layer.add(marker);
+// ============================================================
+// WEATHER MARKERS (precipitation + lightning)
+// ============================================================
+async function renderWeatherMarkers(precipData) {
+    const ds = await getDataSource('weather');
+    ds.entities.removeAll();
+    if (!precipData?.stations) return;
+
+    for (const st of precipData.stations) {
+        const isThunder = st.thunder_hours > 0;
+        const hasRain = st.total_72h_mm > 5;
+        if (!hasRain && !isThunder) continue;
+
+        if (hasRain) {
+            const rainHeight = Math.min(200000, st.total_72h_mm * 600);
+            ds.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(st.lon, st.lat, rainHeight / 2),
+                cylinder: {
+                    length: rainHeight,
+                    topRadius: 30000,
+                    bottomRadius: 30000,
+                    material: Cesium.Color.fromCssColorString('#4488ff').withAlpha(
+                        Math.min(0.5, 0.15 + st.total_72h_mm / 200)
+                    ),
+                    outline: false,
+                },
+                properties: { _type: 'precip', ...st },
+            });
+        }
+
+        if (isThunder) {
+            // Lightning bolt as a zigzag polyline
+            const baseH = 20000;
+            const topH = 50000 + st.thunder_hours * 5000;
+            ds.entities.add({
+                polyline: {
+                    positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                        st.lon, st.lat, baseH,
+                        st.lon + 0.05, st.lat + 0.03, (baseH + topH) / 3,
+                        st.lon - 0.04, st.lat - 0.02, (baseH + topH) * 2 / 3,
+                        st.lon, st.lat, topH,
+                    ]),
+                    width: 2.5,
+                    material: new Cesium.ColorMaterialProperty(
+                        Cesium.Color.fromCssColorString('#ffcc44').withAlpha(0.8)
+                    ),
+                },
+                properties: { _type: 'thunder', ...st },
+            });
+
+            // Glow halo
+            ds.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(st.lon, st.lat, 30000),
+                ellipsoid: {
+                    radii: new Cesium.Cartesian3(50000, 50000, 30000),
+                    material: Cesium.Color.fromCssColorString('#ffaa22').withAlpha(0.1),
+                },
+            });
         }
     }
 }
 
-function renderLineString(coords, color, layer, props) {
-    const pts = [];
-    for (let i = 0; i < coords.length; i++) {
-        if (i > 0 && Math.abs(coords[i][0] - coords[i - 1][0]) > 90) {
-            if (pts.length >= 2) layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-                new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 })));
-            pts.length = 0;
+// ============================================================
+// CLOUD CHARGE LAYER
+// ============================================================
+async function renderCloudLayer(cloudData) {
+    const ds = await getDataSource('clouds');
+    ds.entities.removeAll();
+    if (!cloudData?.stations) return;
+
+    for (const st of cloudData.stations) {
+        const cc = st.cloud_cover?.total || 0;
+        if (cc < 20) continue;
+
+        let color, alpha;
+        if (st.charge_type === 'Cb dipole') { color = '#ffcc44'; alpha = 0.2; }
+        else if (st.charge_type === 'convective') { color = '#ff8844'; alpha = 0.12; }
+        else if (st.charge_type === 'stratiform') { color = '#88aacc'; alpha = 0.06; }
+        else { color = '#6688aa'; alpha = 0.03 + cc / 100 * 0.04; }
+
+        const size = 60000 + cc / 100 * 80000;
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(st.lon, st.lat, 8000),
+            ellipsoid: {
+                radii: new Cesium.Cartesian3(size, size, 5000),
+                material: Cesium.Color.fromCssColorString(color).withAlpha(alpha),
+            },
+            properties: { _type: 'cloud', ...st },
+        });
+
+        // Charge gradient arrow for charged regions
+        if (st.charge_c > 1) {
+            ds.entities.add({
+                polyline: {
+                    positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                        st.lon, st.lat, 3000,
+                        st.lon, st.lat, 12000 + st.charge_c * 500,
+                    ]),
+                    width: 2,
+                    material: new Cesium.PolylineGlowMaterialProperty({
+                        glowPower: 0.3,
+                        color: Cesium.Color.fromCssColorString('#ff4488').withAlpha(0.5),
+                    }),
+                },
+            });
         }
-        pts.push(ll2v(coords[i][1], coords[i][0], R * 1.001));
-    }
-    if (pts.length >= 2) {
-        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 }));
-        line.userData = props;
-        layer.add(line);
     }
 }
 
+// ============================================================
+// GEOJSON / KML LOADER
+// ============================================================
 function parseKML(text) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(text, 'text/xml');
@@ -440,6 +1153,49 @@ function parseKML(text) {
     return { type: 'FeatureCollection', features };
 }
 
+async function renderGeoJSON(geojson) {
+    const ds = await getDataSource('geojson');
+    ds.entities.removeAll();
+    const features = geojson.features || (geojson.geometry ? [geojson] : []);
+    for (const feature of features) {
+        const geom = feature.geometry || feature;
+        const props = feature.properties || {};
+        const color = Cesium.Color.fromCssColorString(props.color || props.stroke || '#44cccc');
+        if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
+            const lines = geom.type === 'MultiLineString' ? geom.coordinates : [geom.coordinates];
+            for (const line of lines) {
+                ds.entities.add({
+                    polyline: {
+                        positions: Cesium.Cartesian3.fromDegreesArray(line.flatMap(c => [c[0], c[1]])),
+                        width: 2,
+                        material: new Cesium.ColorMaterialProperty(color.withAlpha(0.6)),
+                        clampToGround: true,
+                    },
+                });
+            }
+        } else if (geom.type === 'Point') {
+            ds.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(geom.coordinates[0], geom.coordinates[1]),
+                point: { pixelSize: 8, color, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+            });
+        } else if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+            const polys = geom.type === 'MultiPolygon' ? geom.coordinates : [geom.coordinates];
+            for (const poly of polys) {
+                for (const ring of poly) {
+                    ds.entities.add({
+                        polyline: {
+                            positions: Cesium.Cartesian3.fromDegreesArray(ring.flatMap(c => [c[0], c[1]])),
+                            width: 2,
+                            material: new Cesium.ColorMaterialProperty(color.withAlpha(0.5)),
+                            clampToGround: true,
+                        },
+                    });
+                }
+            }
+        }
+    }
+}
+
 // Drag-and-drop handler
 const dropZone = document.getElementById('drop-zone');
 if (dropZone) {
@@ -451,33 +1207,370 @@ if (dropZone) {
             const text = await file.text();
             const isKML = file.name.endsWith('.kml') || file.name.endsWith('.kmz');
             const geojson = isKML ? parseKML(text) : JSON.parse(text);
-            clearLayer('geojson');
-            renderGeoJSON(geojson, 'geojson');
-            // Enable the layer checkbox
+            await renderGeoJSON(geojson);
             const cb = document.querySelector('[data-layer="geojson"]');
             if (cb) cb.checked = true;
-            if (layerGroups['geojson']) layerGroups['geojson'].visible = true;
+            setLayerVisible('geojson', true);
             dropZone.textContent = `Loaded: ${file.name} (${geojson.features?.length || 0} features)`;
         }
     });
 }
 
-// ===== MAGNETOMETER STATIONS =====
-function updateMagnetometers(data) {
-    clearLayer('magnetometers');
-    if (!data?.stations) return;
-    const layer = getLayer('magnetometers');
-    data.stations.forEach(st => {
-        const pos = ll2v(st.lat, st.lon, R * 1.004);
-        const mat = new THREE.MeshBasicMaterial({ color: st.network === 'USGS' ? 0xcc44cc : 0x44cccc, transparent: true, opacity: 0.8 });
-        const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.008, 0), mat);
-        mesh.position.copy(pos);
-        mesh.userData = { type: 'magnetometer', ...st };
-        layer.add(mesh);
-    });
+// ============================================================
+// CESIUM CLICK / HOVER INTERACTION
+// ============================================================
+const tip = document.createElement('div');
+tip.style.cssText = 'position:fixed;background:rgba(5,5,16,0.95);color:#ccc;font:11px monospace;padding:6px 10px;border:1px solid #00ccff;border-radius:4px;pointer-events:none;display:none;z-index:1000;max-width:280px;';
+document.body.appendChild(tip);
+
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+handler.setInputAction(movement => {
+    const pick = viewer.scene.pick(movement.endPosition);
+    if (Cesium.defined(pick) && pick.id?.properties) {
+        const props = {};
+        pick.id.properties.propertyNames.forEach(n => { props[n] = pick.id.properties[n]?.getValue(); });
+        if (props._type === 'earthquake') {
+            const eq = props;
+            const ageH = (Date.now() - eq.time) / 3600000;
+            const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
+            tip.innerHTML = `<b style="color:#ff6644">M${eq.mag?.toFixed(1)}</b> ${eq.place}<br>Depth: ${eq.depth?.toFixed(0) || '?'}km | ${ageH.toFixed(1)}h ago<br>${eq.ang_dist}deg | <span style="color:${zc[eq.zone] || '#888'}">${eq.zone}</span>`;
+            tip.style.display = 'block';
+            tip.style.left = (movement.endPosition.x + 14) + 'px';
+            tip.style.top = (movement.endPosition.y - 10) + 'px';
+            return;
+        }
+        if (props._type === 'plate') {
+            tip.innerHTML = `<b style="color:#4488ff">${props.name}</b><br><span style="color:#889">${props.boundary_type}</span>`;
+            tip.style.display = 'block';
+            tip.style.left = (movement.endPosition.x + 14) + 'px';
+            tip.style.top = (movement.endPosition.y - 10) + 'px';
+            return;
+        }
+        if (props._type === 'telluric') {
+            tip.innerHTML = `<b style="color:#ff8844">${props.name}</b><br>Telluric J: <span style="color:#ff4">${props.j_mA_km} mA/km</span>`;
+            tip.style.display = 'block';
+            tip.style.left = (movement.endPosition.x + 14) + 'px';
+            tip.style.top = (movement.endPosition.y - 10) + 'px';
+            return;
+        }
+    }
+    tip.style.display = 'none';
+}, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+handler.setInputAction(click => {
+    const pick = viewer.scene.pick(click.position);
+    if (Cesium.defined(pick) && pick.id?.properties) {
+        const props = {};
+        pick.id.properties.propertyNames.forEach(n => { props[n] = pick.id.properties[n]?.getValue(); });
+        if (props._type === 'earthquake') { showDetail(props); return; }
+        if (props._type === 'magnetometer') { showMagDetail(props); return; }
+    }
+    document.getElementById('detail').style.display = 'none';
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+function showDetail(eq) {
+    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
+    const ageH = (Date.now() - eq.time) / 3600000, dt = new Date(eq.time);
+    const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
+    const zr = { eye: '0.85x', inner: '0.92x', transition: '0.98x', wavefront: '1.36x', 'wavefront-tail': '1.09x', neutral: '0.95x', 'far-suppress': '0.82x', 'far-neutral': '0.90x', 'pre-antipodal': '1.00x', antipodal: '1.16x' };
+    content.innerHTML = `<h3>M${eq.mag?.toFixed(1)} ${eq.place || 'Unknown'}</h3>
+        <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T', ' ').substring(0, 19)} UTC</span></div>
+        <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH * 60).toFixed(0) + ' min' : ageH.toFixed(1) + ' hours'} ago</span></div>
+        <div class="row"><span class="k">Location</span><span class="val">${eq.lat?.toFixed(3)}N, ${eq.lon?.toFixed(3)}E</span></div>
+        <div class="row"><span class="k">Depth</span><span class="val">${eq.depth?.toFixed(1) || '?'} km</span></div>
+        <div class="row"><span class="k">Subsolar dist</span><span class="val">${eq.ang_dist} deg</span></div>
+        <div class="row"><span class="k">Jelly Ball zone</span><span class="zone-badge" style="background:${zc[eq.zone] || '#444'};color:#fff">${eq.zone} (${zr[eq.zone] || '?'})</span></div>
+        <div style="margin-top:8px;border-top:1px solid #222;padding-top:6px;"><a href="https://earthquake.usgs.gov/earthquakes/eventpage/${eq.id || ''}" target="_blank">USGS Event Page &rarr;</a></div>`;
+    panel.style.display = 'block';
 }
 
-// ===== SIDEBAR DATA =====
+function showMagDetail(st) {
+    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
+    content.innerHTML = `<h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
+        <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
+        <div class="row"><span class="k">Location</span><span class="val">${st.lat?.toFixed(2)}N, ${st.lon?.toFixed(2)}E</span></div>`;
+    panel.style.display = 'block';
+}
+
+// ============================================================
+// THREE.JS SPACE PHYSICS (magnetosphere, solar wind, comet, CR)
+// ============================================================
+
+// Sun is rendered by Cesium (real position + lighting)
+const SUN_X = 10; // used by comet/solar-wind for direction reference
+
+// --- MAGNETOSPHERE ---
+let reconnectionPositions = null, reconnectionPts = null;
+const BOW_STANDOFF = () => 1.6 * magnetoCompression + 0.2;
+
+function buildMagnetosphere() {
+    clearThreeLayer('magnetosphere');
+    const layer = getThreeLayer('magnetosphere');
+    const comp = magnetoCompression, storm = stormLevel, S = 0.5;
+    const cyan = new THREE.Color(0x00ccff), cyanDim = new THREE.Color(0x2288aa);
+
+    for (let p = 0; p < 4; p++) {
+        const phi = (p / 4) * Math.PI;
+        for (let s = 0; s < 5; s++) {
+            const L = 2.0 + s * 0.7;
+            const pts = [];
+            for (let j = 0; j <= 80; j++) {
+                const theta = (j / 80) * Math.PI;
+                const r = L * Math.sin(theta) * Math.sin(theta);
+                let x = r * Math.sin(theta) * Math.cos(phi);
+                let y = r * Math.cos(theta);
+                let z = r * Math.sin(theta) * Math.sin(phi);
+                if (x > 0) x *= comp * 0.7;
+                if (x < 0) { x *= 1 + (1 - comp) * 0.8 + s * 0.15; y *= 1 - s * 0.04 * Math.min(1, Math.abs(x * S)); }
+                pts.push(new THREE.Vector3(x * S, y * S, z * S));
+            }
+            layer.add(new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints(pts),
+                new THREE.LineBasicMaterial({ color: s < 2 ? cyan : cyanDim, transparent: true, opacity: s < 2 ? 0.5 : 0.25 })
+            ));
+        }
+    }
+
+    // Bow shock
+    const bowR = BOW_STANDOFF();
+    const bowColor = storm > 0.5 ? 0xff6644 : 0x44ddff;
+    for (let m = 0; m < 4; m++) {
+        const angle = (m / 4) * Math.PI;
+        const pts = [];
+        for (let i = 0; i <= 40; i++) {
+            const t = (i / 40) * Math.PI * 0.5;
+            pts.push(new THREE.Vector3(bowR * Math.cos(t), bowR * Math.sin(t) * Math.sin(angle), bowR * Math.sin(t) * Math.cos(angle)));
+        }
+        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.4 })));
+    }
+
+    // Aurora ovals (drawn in Three.js for consistency)
+    const auroraLat = 70 - storm * 12;
+    for (const isNorth of [true, false]) {
+        const pts = [];
+        const lat = isNorth ? auroraLat : -auroraLat;
+        for (let i = 0; i <= 80; i++) pts.push(ll2v(lat, (i / 80) * 360 - 180, R * 1.008));
+        const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.15 + storm * 0.5 })
+        );
+        line.name = isNorth ? 'aurora-n-1' : 'aurora-s-1';
+        layer.add(line);
+    }
+
+    // Ring current
+    const rcIntensity = Math.min(1, Math.abs(currentDst) / 100);
+    const rcMesh = new THREE.Mesh(
+        new THREE.TorusGeometry(0.25, 0.02 + storm * 0.02, 12, 48),
+        new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(0.08, 0.9, 0.4 + rcIntensity * 0.3), transparent: true, opacity: 0.06 + rcIntensity * 0.15, depthWrite: false })
+    );
+    rcMesh.rotation.x = Math.PI / 2;
+    layer.add(rcMesh);
+
+    // Reconnection
+    if (currentBz < -3) {
+        const nParts = 50;
+        reconnectionPositions = new Float32Array(nParts * 3);
+        for (let i = 0; i < nParts; i++) {
+            reconnectionPositions[i * 3] = bowR * 0.9 + Math.random() * 0.1;
+            reconnectionPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.15;
+            reconnectionPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(reconnectionPositions, 3));
+        reconnectionPts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xff4488, size: 0.008, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
+        layer.add(reconnectionPts);
+    } else { reconnectionPositions = null; reconnectionPts = null; }
+}
+
+function animateReconnection() {
+    if (!reconnectionPositions) return;
+    for (let i = 0; i < reconnectionPositions.length / 3; i++) {
+        const ix = i * 3, dir = i % 2 === 0 ? 1 : -1;
+        reconnectionPositions[ix] -= 0.003;
+        reconnectionPositions[ix + 1] += dir * 0.004;
+        if (Math.abs(reconnectionPositions[ix + 1]) > 0.5 || reconnectionPositions[ix] < -0.4) {
+            reconnectionPositions[ix] = 0.5 + Math.random() * 0.15;
+            reconnectionPositions[ix + 1] = (Math.random() - 0.5) * 0.1;
+            reconnectionPositions[ix + 2] = (Math.random() - 0.5) * 0.08;
+        }
+    }
+    if (reconnectionPts) reconnectionPts.geometry.attributes.position.needsUpdate = true;
+}
+
+function updateMagnetosphereCompression(bz) {
+    currentBz = bz;
+    const c = bz < 0 ? Math.max(0.4, 1 + bz / 30) : 1.0;
+    if (Math.abs(c - magnetoCompression) > 0.02) { magnetoCompression = c; buildMagnetosphere(); }
+}
+
+function updateStormLevel(kp, dst) {
+    currentKp = kp; currentDst = dst;
+    const kpLevel = Math.max(0, (kp - 3) / 6);
+    const dstLevel = Math.min(1, Math.max(0, Math.abs(dst) / 150));
+    const newLevel = Math.max(kpLevel, dstLevel);
+    if (Math.abs(newLevel - stormLevel) > 0.05) {
+        stormLevel = newLevel;
+        buildMagnetosphere();
+        const si = document.getElementById('storm-indicator');
+        if (si) {
+            si.textContent = stormLevel > 0.7 ? 'EXTREME' : stormLevel > 0.5 ? 'MAJOR' : stormLevel > 0.3 ? 'MODERATE' : stormLevel > 0.1 ? 'MINOR' : 'QUIET';
+            si.style.color = stormLevel > 0.5 ? '#f44' : stormLevel > 0.2 ? '#ff4' : '#4f4';
+        }
+        const al = document.getElementById('aurora-lat');
+        if (al) { al.textContent = Math.round(70 - stormLevel * 12) + '\u00b0'; al.style.color = stormLevel > 0.3 ? '#88ffaa' : '#44ff88'; }
+        const rc = document.getElementById('ring-current-val');
+        if (rc) { rc.textContent = `${dst} nT`; rc.style.color = dst < -100 ? '#f44' : dst < -50 ? '#ffaa44' : '#4f4'; }
+    }
+}
+
+buildMagnetosphere();
+
+// --- SOLAR WIND PARTICLES ---
+const SW_MAX = 800;
+let swParticles = null, swPositions = null, swVelocities = null, swColors = null;
+
+function initParticle(i, type) {
+    const ix = i * 3;
+    const spread = type === 2 ? 0.3 : 0.7;
+    swPositions[ix] = 2 + Math.random() * 7;
+    swPositions[ix + 1] = (Math.random() - 0.5) * spread;
+    swPositions[ix + 2] = (Math.random() - 0.5) * spread;
+    const baseSpeed = 0.01 + Math.random() * 0.005;
+    const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
+    swVelocities[ix] = -baseSpeed * speedMult;
+    swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
+    swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
+    if (type === 2) { swColors[ix] = 1.0; swColors[ix + 1] = 0.2; swColors[ix + 2] = 0.15; }
+    else if (type === 1) { swColors[ix] = 0.3; swColors[ix + 1] = 0.85; swColors[ix + 2] = 1.0; }
+    else { swColors[ix] = 1.0; swColors[ix + 1] = 0.85 + Math.random() * 0.15; swColors[ix + 2] = 0.4 + Math.random() * 0.3; }
+}
+
+function buildSolarWind() {
+    clearThreeLayer('solar-wind');
+    const layer = getThreeLayer('solar-wind');
+    const geo = new THREE.BufferGeometry();
+    swPositions = new Float32Array(SW_MAX * 3);
+    swVelocities = new Float32Array(SW_MAX * 3);
+    swColors = new Float32Array(SW_MAX * 3);
+    const electronFrac = Math.min(0.4, swElectronFlux / 5000);
+    const sepFrac = Math.min(0.2, swProtonScore * 0.2);
+    const protonFrac = 1 - electronFrac - sepFrac;
+    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));
+    for (let i = 0; i < SW_MAX; i++) {
+        const t = i / SW_MAX;
+        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
+        initParticle(i, type);
+        if (i >= activeCount) { swPositions[i * 3] = 99; swPositions[i * 3 + 1] = 99; swPositions[i * 3 + 2] = 99; }
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(swPositions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(swColors, 3));
+    swParticles = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.018, vertexColors: true, transparent: true, opacity: 0.85,
+        blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+    }));
+    layer.add(swParticles);
+}
+
+function animateSolarWind() {
+    if (!swPositions) return;
+    const sf = swSpeed / 400;
+    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));
+    const electronFrac = Math.min(0.4, swElectronFlux / 5000);
+    const sepFrac = Math.min(0.2, swProtonScore * 0.2);
+    const protonFrac = 1 - electronFrac - sepFrac;
+    for (let i = 0; i < SW_MAX; i++) {
+        if (i >= activeCount) continue;
+        const ix = i * 3;
+        const t = i / SW_MAX;
+        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
+        swPositions[ix] += swVelocities[ix] * sf;
+        swPositions[ix + 1] += swVelocities[ix + 1];
+        swPositions[ix + 2] += swVelocities[ix + 2];
+        const dist = Math.sqrt(swPositions[ix] ** 2 + swPositions[ix + 1] ** 2 + swPositions[ix + 2] ** 2);
+        const bowDist = BOW_STANDOFF();
+        if (dist < bowDist) {
+            const nx = swPositions[ix] / dist, ny = swPositions[ix + 1] / dist, nz = swPositions[ix + 2] / dist;
+            swVelocities[ix] += nx * 0.003; swVelocities[ix + 1] += ny * 0.003; swVelocities[ix + 2] += nz * 0.003;
+        }
+        if (swPositions[ix] < -2 || dist > 12) {
+            const spread = type === 2 ? 0.3 : 0.7;
+            swPositions[ix] = 6 + Math.random() * 3;
+            swPositions[ix + 1] = (Math.random() - 0.5) * spread;
+            swPositions[ix + 2] = (Math.random() - 0.5) * spread;
+            const sm = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
+            swVelocities[ix] = -(0.01 + Math.random() * 0.005) * sm;
+            swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
+            swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
+        }
+    }
+    if (swParticles) {
+        swParticles.geometry.attributes.position.needsUpdate = true;
+        swParticles.geometry.attributes.color.needsUpdate = true;
+    }
+}
+
+function updateSolarWindData(feeds) {
+    if (!feeds) return;
+    const sw = feeds.solar_wind_latest || feeds;
+    if (sw.speed != null) swSpeed = sw.speed;
+    if (sw.density != null) swDensity = sw.density;
+    const el = feeds.electron_latest || {};
+    if (el.flux != null) swElectronFlux = el.flux;
+}
+
+buildSolarWind();
+
+// (comet removed)
+
+// --- COSMIC RAY ---
+let crActive = false, crProgress = 0, crCooldown = 0, crRate = 120;
+const crTrailPts = 20;
+const crPositions = new Float32Array(crTrailPts * 3);
+const crGeo = new THREE.BufferGeometry();
+crGeo.setAttribute('position', new THREE.BufferAttribute(crPositions, 3));
+const crLine = new THREE.Line(crGeo, new THREE.LineBasicMaterial({ color: 0xaaddff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+threeScene.add(crLine);
+let crEntry = new THREE.Vector3(), crDir = new THREE.Vector3(), crCharge = 1;
+
+function spawnGCR() {
+    const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+    crEntry.set(5 * Math.sin(phi) * Math.cos(theta), 5 * Math.cos(phi), 5 * Math.sin(phi) * Math.sin(theta));
+    crDir.copy(crEntry).negate().normalize();
+    crDir.x += (Math.random() - 0.5) * 0.4; crDir.y += (Math.random() - 0.5) * 0.4; crDir.z += (Math.random() - 0.5) * 0.4;
+    crDir.normalize(); crCharge = Math.random() > 0.5 ? 1 : -1; crProgress = 0; crActive = true; crLine.material.opacity = 0.6;
+}
+
+function animateGCR() {
+    if (!crActive) {
+        crCooldown--;
+        if (crCooldown <= 0) { spawnGCR(); crCooldown = crRate; }
+        crLine.material.opacity *= 0.93; crGeo.attributes.position.needsUpdate = true; return;
+    }
+    crProgress++;
+    const pos = crEntry.clone().addScaledVector(crDir, crProgress * 0.08);
+    const radial = pos.clone().normalize();
+    const lorentz = new THREE.Vector3().crossVectors(crDir, radial).multiplyScalar(0.003 * crCharge / (pos.length() + 0.5));
+    crDir.add(lorentz).normalize();
+    for (let i = crTrailPts - 1; i > 0; i--) {
+        crPositions[i * 3] = crPositions[(i - 1) * 3];
+        crPositions[i * 3 + 1] = crPositions[(i - 1) * 3 + 1];
+        crPositions[i * 3 + 2] = crPositions[(i - 1) * 3 + 2];
+    }
+    crPositions[0] = pos.x; crPositions[1] = pos.y; crPositions[2] = pos.z;
+    crGeo.attributes.position.needsUpdate = true;
+    if (pos.length() < R * 1.05) { crActive = false; crLine.material.color.set(0xffffff); setTimeout(() => crLine.material.color.set(0xaaddff), 200); }
+    if (pos.length() > 8 || crProgress > 200) crActive = false;
+}
+
+function updateCRRate(crDeviation) {
+    crRate = Math.max(30, Math.floor(120 * (1 - crDeviation / 100 * 2)));
+}
+
+// ============================================================
+// SIDEBAR DATA UPDATERS (unchanged from original)
+// ============================================================
 async function fetchJSON(ep) {
     try { return await (await fetch(`${API}${ep}`)).json(); }
     catch (e) { return null; }
@@ -530,42 +1623,27 @@ function drawXRS(data) {
     ctx.stroke();
 }
 
-// ===== SEISMOGRAM RENDERER =====
 function drawSeismogram(data) {
     const c = document.getElementById('seismo-chart');
     if (!c || !data?.samples?.length) return;
     const ctx = c.getContext('2d');
     const w = c.width = c.clientWidth * 2, h = c.height = c.clientHeight * 2;
     ctx.clearRect(0, 0, w, h);
-
     const samples = data.samples;
     const mean = samples.reduce((s, v) => s + v, 0) / samples.length;
     const centered = samples.map(v => v - mean);
     const maxAbs = Math.max(...centered.map(Math.abs)) || 1;
-
-    // Background grid
     ctx.strokeStyle = '#181833'; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
-
-    // Waveform
     ctx.strokeStyle = '#44ff88'; ctx.lineWidth = 1.2; ctx.beginPath();
     centered.forEach((v, i) => {
-        const x = (i / (centered.length - 1)) * w;
-        const y = h / 2 - (v / maxAbs) * (h * 0.45);
+        const x = (i / (centered.length - 1)) * w, y = h / 2 - (v / maxAbs) * (h * 0.45);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     });
     ctx.stroke();
-
-    // Fill under waveform
     ctx.fillStyle = 'rgba(68,255,136,0.06)'; ctx.beginPath();
-    centered.forEach((v, i) => {
-        const x = (i / (centered.length - 1)) * w;
-        const y = h / 2 - (v / maxAbs) * (h * 0.45);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
+    centered.forEach((v, i) => { const x = (i / (centered.length - 1)) * w, y = h / 2 - (v / maxAbs) * (h * 0.45); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
     ctx.lineTo(w, h / 2); ctx.lineTo(0, h / 2); ctx.closePath(); ctx.fill();
-
-    // Labels
     const stEl = document.getElementById('seismo-station');
     if (stEl && data.station) stEl.textContent = data.station;
     const timeEl = document.getElementById('seismo-time');
@@ -574,119 +1652,55 @@ function drawSeismogram(data) {
     if (ampEl) ampEl.textContent = `pk: ${maxAbs.toFixed(0)} counts`;
 }
 
-// ===== JELLY BALL PREDICTION TRACKER =====
+// --- All sidebar updaters ---
 function updJellyBall(data) {
     if (!data || data.error) return;
-
-    // J gauge
     const jEl = document.getElementById('jb-j');
-    if (jEl) {
-        jEl.textContent = data.j_current?.toFixed(3) || '--';
-        jEl.style.color = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#44ff44';
-    }
+    if (jEl) { jEl.textContent = data.j_current?.toFixed(3) || '--'; jEl.style.color = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#44ff44'; }
     const bar = document.getElementById('jb-bar');
-    if (bar) {
-        bar.style.width = Math.min(100, (data.j_current || 0) * 100) + '%';
-        bar.style.background = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#4488ff';
-    }
+    if (bar) { bar.style.width = Math.min(100, (data.j_current || 0) * 100) + '%'; bar.style.background = data.above_critical ? '#ff4444' : data.gap_pct < 10 ? '#ffaa44' : '#4488ff'; }
     const marker = document.getElementById('jb-jc-marker');
     if (marker) marker.style.width = ((data.j_critical || 0.637) * 100) + '%';
     const gapEl = document.getElementById('jb-gap');
-    if (gapEl) {
-        const sign = data.gap > 0 ? '-' : '+';
-        gapEl.textContent = `${sign}${Math.abs(data.gap_pct || 0).toFixed(1)}%`;
-    }
-
-    // Phase badge
+    if (gapEl) { const sign = data.gap > 0 ? '-' : '+'; gapEl.textContent = `${sign}${Math.abs(data.gap_pct || 0).toFixed(1)}%`; }
     const phaseEl = document.getElementById('jb-phase');
     if (phaseEl) {
         phaseEl.textContent = data.phase || '--';
         const p = (data.phase || '').toLowerCase();
-        phaseEl.className = 'esc-badge ' + (
-            p.includes('storm') ? 'esc-flare' : p.includes('critical') ? 'esc-active' :
-            p.includes('recovery') ? 'esc-elevated' : 'esc-quiet'
-        );
+        phaseEl.className = 'esc-badge ' + (p.includes('storm') ? 'esc-flare' : p.includes('critical') ? 'esc-active' : p.includes('recovery') ? 'esc-elevated' : 'esc-quiet');
         phaseEl.style.fontSize = '8px'; phaseEl.style.padding = '1px 5px';
     }
-
-    // Coupling info
     const xiEl = document.getElementById('jb-xi');
-    if (xiEl) {
-        const xi = data.correlation_length_km;
-        xiEl.textContent = xi > 1e6 ? `${(xi / 1e6).toFixed(1)}M km` : xi > 1e3 ? `${(xi / 1e3).toFixed(0)}k` : `${xi?.toFixed(0) || '--'}`;
-        xiEl.style.color = xi > 1e6 ? '#ff4444' : xi > 1e5 ? '#ffaa44' : '#44aaff';
-    }
+    if (xiEl) { const xi = data.correlation_length_km; xiEl.textContent = xi > 1e6 ? `${(xi / 1e6).toFixed(1)}M km` : xi > 1e3 ? `${(xi / 1e3).toFixed(0)}k` : `${xi?.toFixed(0) || '--'}`; xiEl.style.color = xi > 1e6 ? '#ff4444' : xi > 1e5 ? '#ffaa44' : '#44aaff'; }
     const shieldEl = document.getElementById('jb-shield');
-    if (shieldEl) {
-        shieldEl.textContent = data.shield || '--';
-        shieldEl.style.color = data.shield === 'ON' ? '#4f4' : data.shield === 'OFF' ? '#f44' : '#ff4';
-    }
-
-    // Three-body coupling indicators
-    // Solar l=2: from Kp (higher Kp = stronger solar driving)
+    if (shieldEl) { shieldEl.textContent = data.shield || '--'; shieldEl.style.color = data.shield === 'ON' ? '#4f4' : data.shield === 'OFF' ? '#f44' : '#ff4'; }
     const solarEl = document.getElementById('h-solar');
-    if (solarEl && data.inputs) {
-        const kp = data.inputs.kp || 0;
-        const solarL2 = Math.min(1, kp / 9);
-        solarEl.textContent = solarL2.toFixed(2);
-        solarEl.style.color = solarL2 > 0.5 ? '#ff8844' : '#556';
-    }
-    // Lunar l=2: compute from current lunar phase (fortnightly M2)
+    if (solarEl && data.inputs) { const kp = data.inputs.kp || 0; const solarL2 = Math.min(1, kp / 9); solarEl.textContent = solarL2.toFixed(2); solarEl.style.color = solarL2 > 0.5 ? '#ff8844' : '#556'; }
     const lunarEl = document.getElementById('h-lunar');
-    if (lunarEl) {
-        // Quick lunar phase calc
-        const ref = new Date('2000-01-06T00:00:00Z').getTime();
-        const now = Date.now();
-        const phase = ((now - ref) / 86400000 % 29.53059) / 29.53059;
-        const m2 = Math.abs(Math.cos(2 * Math.PI * phase)); // 1 at new/full, 0 at quarters
-        lunarEl.textContent = m2.toFixed(2);
-        lunarEl.style.color = m2 > 0.7 ? '#88aaff' : '#556';
-    }
-    // Storm l=2: from J gap (closer to J_c = stronger ringing)
+    if (lunarEl) { const ref = new Date('2000-01-06T00:00:00Z').getTime(); const phase = ((Date.now() - ref) / 86400000 % 29.53059) / 29.53059; const m2 = Math.abs(Math.cos(2 * Math.PI * phase)); lunarEl.textContent = m2.toFixed(2); lunarEl.style.color = m2 > 0.7 ? '#88aaff' : '#556'; }
     const stormEl = document.getElementById('h-storm');
-    if (stormEl && data.gap_pct != null) {
-        const stormL2 = Math.max(0, 1 - Math.abs(data.gap_pct) / 30);
-        stormEl.textContent = stormL2.toFixed(2);
-        stormEl.style.color = stormL2 > 0.5 ? '#44ff88' : '#556';
-    }
-
+    if (stormEl && data.gap_pct != null) { const stormL2 = Math.max(0, 1 - Math.abs(data.gap_pct) / 30); stormEl.textContent = stormL2.toFixed(2); stormEl.style.color = stormL2 > 0.5 ? '#44ff88' : '#556'; }
     const detailEl = document.getElementById('jb-detail');
     if (detailEl) detailEl.textContent = data.phase_detail || '--';
 }
 
-// ===== JELLYBALL NEURAL PREDICTIONS =====
-let nnData = null;
-let nnPhase = 'compression';
-
+let nnData = null, nnPhase = 'compression';
 function updNeural(data) {
     if (!data || data.error) return;
     nnData = data;
     renderNeuralZones();
-
-    // Mode amplitude bars
     const modes = data.diagnostics?.mode_amplitudes;
     if (modes) {
         for (let l = 1; l <= 6; l++) {
-            const key = `l${l}`;
-            const val = modes[key] ?? 0;
+            const val = modes[`l${l}`] ?? 0;
             const bar = document.getElementById(`mode-l${l}`);
             const score = document.getElementById(`ms-l${l}`);
-            if (bar) {
-                const pct = Math.min(100, Math.abs(val) / 5 * 100);
-                const hue = val > 0 ? (l === 2 ? '#ff8844' : l === 3 ? '#44aaff' : '#44ff88')
-                                     : (l === 2 ? '#ff4466' : '#6644aa');
-                bar.style.width = pct + '%';
-                bar.style.background = hue;
-            }
+            if (bar) { bar.style.width = Math.min(100, Math.abs(val) / 5 * 100) + '%'; bar.style.background = val > 0 ? (l === 2 ? '#ff8844' : l === 3 ? '#44aaff' : '#44ff88') : (l === 2 ? '#ff4466' : '#6644aa'); }
             if (score) score.textContent = (val > 0 ? '+' : '') + val.toFixed(2);
         }
     }
-
-    // Bivector norm
     const bivEl = document.getElementById('nn-biv');
-    if (bivEl && data.diagnostics?.bivector_norm != null) {
-        bivEl.textContent = data.diagnostics.bivector_norm.toFixed(1);
-    }
+    if (bivEl && data.diagnostics?.bivector_norm != null) bivEl.textContent = data.diagnostics.bivector_norm.toFixed(1);
 }
 
 function renderNeuralZones() {
@@ -694,19 +1708,13 @@ function renderNeuralZones() {
     const zones = nnData.predictions[nnPhase];
     const container = document.getElementById('nn-zones');
     if (!container) return;
-
     container.innerHTML = Object.entries(zones).map(([name, ratio]) => {
         const pct = Math.min(100, Math.max(0, (ratio - 0.2) / 4.8 * 100));
         const color = ratio > 1.5 ? '#ff4444' : ratio > 1.1 ? '#ffaa44' : ratio > 0.9 ? '#44ff44' : '#4488ff';
-        return `<div class="det-row">
-            <span class="det-label">${name}</span>
-            <div class="det-bar-bg"><div class="det-bar" style="width:${pct}%;background:${color}"></div></div>
-            <span class="det-score" style="color:${color}">${ratio.toFixed(2)}</span>
-        </div>`;
+        return `<div class="det-row"><span class="det-label">${name}</span><div class="det-bar-bg"><div class="det-bar" style="width:${pct}%;background:${color}"></div></div><span class="det-score" style="color:${color}">${ratio.toFixed(2)}</span></div>`;
     }).join('');
 }
 
-// Phase tab buttons
 document.querySelectorAll('#nn-phase-tabs button').forEach(btn => {
     btn.addEventListener('click', () => {
         nnPhase = btn.dataset.phase;
@@ -719,521 +1727,44 @@ document.querySelectorAll('#nn-phase-tabs button').forEach(btn => {
     });
 });
 
-// ===== FIELD STRENGTHS UPDATER =====
 function updFieldStrengths(data) {
     if (!data || data.error) return;
-
     const fwf = data.fair_weather_ez;
-    if (fwf) {
-        document.getElementById('fv-fwf').textContent = `${fwf.value} V/m`;
-        document.getElementById('fb-fwf').style.width = Math.min(100, (fwf.value / 250) * 100) + '%';
-        const stEz = document.getElementById('st-ez');
-        if (stEz) stEz.textContent = `${fwf.value} V/m`;
-    }
+    if (fwf) { document.getElementById('fv-fwf').textContent = `${fwf.value} V/m`; document.getElementById('fb-fwf').style.width = Math.min(100, (fwf.value / 250) * 100) + '%'; const stEz = document.getElementById('st-ez'); if (stEz) stEz.textContent = `${fwf.value} V/m`; }
     const tel = data.telluric_j;
-    if (tel) {
-        document.getElementById('fv-telluric').textContent = `${tel.value} mA/km`;
-        document.getElementById('fb-telluric').style.width = Math.min(100, (tel.value / 100) * 100) + '%';
-        document.getElementById('fb-telluric').style.background = tel.value > 20 ? '#ff4444' : '#ff8844';
-    }
+    if (tel) { document.getElementById('fv-telluric').textContent = `${tel.value} mA/km`; document.getElementById('fb-telluric').style.width = Math.min(100, (tel.value / 100) * 100) + '%'; document.getElementById('fb-telluric').style.background = tel.value > 20 ? '#ff4444' : '#ff8844'; }
     const man = data.mansurov_dbdt;
-    if (man) {
-        document.getElementById('fv-mansurov').textContent = `${man.value} nT/hr`;
-        document.getElementById('fb-mansurov').style.width = Math.min(100, (man.value / 50) * 100) + '%';
-    }
+    if (man) { document.getElementById('fv-mansurov').textContent = `${man.value} nT/hr`; document.getElementById('fb-mansurov').style.width = Math.min(100, (man.value / 50) * 100) + '%'; }
     const sch = data.schumann_f1;
-    if (sch) {
-        document.getElementById('fv-schumann').textContent = `${sch.value} Hz`;
-        // Normalize around 7.83 baseline
-        document.getElementById('fb-schumann').style.width = Math.min(100, (sch.value / 8.5) * 100) + '%';
-    }
+    if (sch) { document.getElementById('fv-schumann').textContent = `${sch.value} Hz`; document.getElementById('fb-schumann').style.width = Math.min(100, (sch.value / 8.5) * 100) + '%'; }
     const gic = data.gic_risk;
-    if (gic) {
-        document.getElementById('fv-gic').textContent = gic.label;
-        document.getElementById('fb-gic').style.width = (gic.score * 100) + '%';
-        document.getElementById('fb-gic').style.background = gic.score > 0.5 ? '#ff4444' : gic.score > 0.2 ? '#ffaa44' : '#44ff44';
-        document.getElementById('fv-gic').style.color = gic.score > 0.5 ? '#ff4444' : gic.score > 0.2 ? '#ffaa44' : '#44ff44';
-    }
+    if (gic) { document.getElementById('fv-gic').textContent = gic.label; document.getElementById('fb-gic').style.width = (gic.score * 100) + '%'; document.getElementById('fb-gic').style.background = gic.score > 0.5 ? '#ff4444' : gic.score > 0.2 ? '#ffaa44' : '#44ff44'; document.getElementById('fv-gic').style.color = gic.score > 0.5 ? '#ff4444' : gic.score > 0.2 ? '#ffaa44' : '#44ff44'; }
 }
 
-// ===== Status updaters =====
-function updKp(d) {
-    if (!d?.current) return;
-    const k = d.current, el = document.getElementById('kp-metric');
-    el.textContent = `Kp ${k.toFixed(0)}`;
-    el.className = 'm ' + (k < 4 ? 'q' : k < 6 ? 'a' : 's');
-    const s = document.getElementById('st-kp');
-    s.textContent = k.toFixed(0); s.className = 'v ' + (k < 4 ? 'g' : k < 6 ? '' : 'w');
-}
-
-function updSW(d) {
-    if (!d) return;
-    if (d.current_bz != null) {
-        const e = document.getElementById('st-bz');
-        e.textContent = `${d.current_bz.toFixed(1)}`;
-        e.className = 'v ' + (d.current_bz < -10 ? 'w' : 'g');
-    }
-    if (d.current_speed != null) {
-        const e = document.getElementById('st-vsw');
-        e.textContent = `${d.current_speed.toFixed(0)}`;
-        e.className = 'v ' + (d.current_speed > 600 ? 'w' : 'g');
-    }
-    drawChart('sw-chart', d.bz, { color: '#ff6666', fillNeg: true, dec: 1 });
-}
-
-function updXRS(d) {
-    if (!d) return;
-    if (d.current_flux) {
-        const f = d.current_flux;
-        const cl = f >= 1e-4 ? `X${(f / 1e-4).toFixed(1)}` : f >= 1e-5 ? `M${(f / 1e-5).toFixed(1)}` : f >= 1e-6 ? `C${(f / 1e-6).toFixed(1)}` : 'B';
-        document.getElementById('st-xrs').textContent = cl;
-    }
-    drawXRS(d);
-    const el = document.getElementById('op-state');
-    el.textContent = d.state || '?';
-    el.className = 'state ' + (d.state === 'FALLING' ? 'falling' : d.state === 'RISING' ? 'rising' : 'stable');
-}
-
-function updSun(d) {
-    if (!d?.images) return;
-    window._si = d.images;
-    const img = document.getElementById('sun-image');
-    if (!img.dataset.loaded) { img.src = d.images.eit_195 || Object.values(d.images)[0]; img.dataset.loaded = '1'; }
-}
-
-function updLunar(d) {
-    if (!d) return;
-    document.getElementById('lunar-metric').textContent = `${d.name}`;
-    document.getElementById('lunar-detail').textContent = `${d.illumination}% | F:${d.tidal_force.toFixed(2)} | dF:${d.tidal_rate.toFixed(2)}`;
-    document.getElementById('st-moon').textContent = `${d.illumination}%`;
-}
-
-function updCR(d) {
-    if (!d?.stations) return;
-    const ks = Object.keys(d.stations);
-    if (!ks.length) return;
-    const avg = ks.reduce((s, k) => s + d.stations[k].deviation_pct, 0) / ks.length;
-    const el = document.getElementById('cr-metric');
-    el.textContent = `${avg > 0 ? '+' : ''}${avg.toFixed(1)}%`;
-    el.className = 'm ' + (d.forbush_detected ? 's' : 'q');
-    document.getElementById('cr-detail').textContent = d.forbush_detected ? 'FORBUSH DECREASE' : `${ks.length} stations nominal`;
-    document.getElementById('st-cr').textContent = `${avg > 0 ? '+' : ''}${avg.toFixed(1)}%`;
-    document.getElementById('st-cr').className = 'v ' + (d.forbush_detected ? 'w' : 'g');
-}
-
-function updGlobalCR(d) {
-    if (!d || d.error) return;
-    const stEl = document.getElementById('cr-stations');
-    if (stEl) stEl.textContent = `${d.n_stations || 0} stations`;
-    if (d.global_mean != null) {
-        const el = document.getElementById('cr-metric');
-        if (el) {
-            el.textContent = `${d.global_mean > 0 ? '+' : ''}${d.global_mean.toFixed(1)}%`;
-            el.className = 'm ' + (d.forbush ? 's' : 'q');
-        }
-        const fb = document.getElementById('cr-forbush');
-        if (fb) {
-            fb.textContent = d.forbush ? 'FORBUSH DECREASE' : 'nominal';
-            fb.style.color = d.forbush ? '#f44' : '#4f4';
-        }
-    }
-}
-
-function updTEC(d) {
-    if (!d) return;
-    const el = document.getElementById('tec-metric');
-    const det = document.getElementById('tec-detail');
-    if (d.available) {
-        if (el) { el.textContent = 'LIVE'; el.className = 'm q'; }
-        if (det) det.textContent = d.dataset || 'USTEC';
-    } else {
-        if (el) { el.textContent = 'N/A'; el.className = 'm'; }
-        if (det) det.textContent = d.note?.substring(0, 30) || 'unavailable';
-    }
-}
-
-function updPrecip(d) {
-    if (!d) return;
-    const el = document.getElementById('precip-metric');
-    const det = document.getElementById('precip-detail');
-    if (el) {
-        el.textContent = `${d.global_precip_72h || 0} mm`;
-        el.className = 'm ' + (d.global_precip_72h > 100 ? 'a' : 'q');
-    }
-    if (det) {
-        const thunder = d.global_thunder_hours || 0;
-        det.textContent = `${d.n_stations || 0} sites | ${thunder} storm-hrs`;
-    }
-    // Render precipitation + thunderstorm markers on globe
-    renderWeatherMarkers(d);
-}
-
-function updLightning(d) {
-    if (!d) return;
-    const el = document.getElementById('lightning-metric');
-    const det = document.getElementById('lightning-detail');
-    if (el) {
-        const clim = d.climatology;
-        if (clim) {
-            el.textContent = clim.month;
-            el.style.color = '#ffaa44';
-        }
-        const rt = d.realtime_thunder_hours || 0;
-        if (rt > 0 && el) el.textContent += ` (${rt}h)`;
-    }
-    if (det && d.climatology?.hotspots) {
-        const top = d.climatology.hotspots.sort((a, b) => b.mean_density - a.mean_density)[0];
-        det.textContent = top ? `peak: ${top.name}` : 'WWLLN climatology';
-    }
-}
-
-function updPorePressure(d) {
-    if (!d?.stations) return;
-    const container = document.getElementById('pore-bars');
-    if (!container) return;
-
-    // Show each station's 100m depth pore pressure
-    container.innerHTML = d.stations.map(st => {
-        const pp = st.depth_profile?.['100m'];
-        if (!pp) return '';
-        const pct = pp.pct_tectonic;
-        const barW = Math.min(100, pct * 3000); // scale up since values are tiny
-        const color = pct > 0.01 ? '#ff4444' : pct > 0.005 ? '#ffaa44' : '#44aaff';
-        const name = st.name.split('(')[0].trim().substring(0, 12);
-        return `<div class="det-row">
-            <span class="det-label">${name}</span>
-            <div class="det-bar-bg"><div class="det-bar" style="width:${barW}%;background:${color}"></div></div>
-            <span class="det-score" style="color:${color}">${pp.total_pa.toFixed(0)}</span>
-        </div>`;
-    }).join('');
-
-    // Tidal and Jz indicators
-    const tidalEl = document.getElementById('pp-tidal');
-    if (tidalEl && d.inputs) {
-        tidalEl.textContent = d.inputs.tidal_force > 0 ? 'spring' : 'neap';
-        tidalEl.style.color = Math.abs(d.inputs.tidal_force) > 0.7 ? '#88aaff' : '#556';
-    }
-    const jzEl = document.getElementById('pp-jz');
-    if (jzEl && d.inputs) {
-        jzEl.textContent = d.inputs.telluric_j_mA_km?.toFixed(1) || '--';
-    }
-}
-
-function updCloudCharge(d) {
-    if (!d?.stations) return;
-
-    // Panel updates
-    const ezEl = document.getElementById('cc-ez');
-    const stormEl = document.getElementById('cc-storms');
-    const chargeEl = document.getElementById('cc-charge');
-    if (ezEl) {
-        const avgEz = d.stations.reduce((s, st) => s + (st.ez_v_m || 0), 0) / Math.max(d.stations.length, 1);
-        ezEl.textContent = avgEz.toFixed(0);
-    }
-    if (stormEl) stormEl.textContent = d.active_thunderstorms || 0;
-    if (chargeEl) chargeEl.textContent = d.global_charge_c?.toFixed(0) || '0';
-
-    // Station list
-    const container = document.getElementById('cc-stations');
-    if (container) {
-        container.innerHTML = d.stations.filter(st => st.charge_c > 0 || st.cloud_cover?.total > 50).map(st => {
-            const cc = st.cloud_cover?.total || 0;
-            const color = st.charge_type === 'Cb dipole' ? '#ffcc44' : st.charge_type === 'convective' ? '#ff8844' : '#4488ff';
-            return `<div style="display:flex;justify-content:space-between;font-size:8px;margin-bottom:1px;">
-                <span style="color:#778;">${st.name}</span>
-                <span style="color:${color};">${st.charge_type} ${st.charge_c > 0 ? st.charge_c + 'C' : cc + '%'}</span>
-            </div>`;
-        }).join('');
-    }
-
-    // Render cloud indicators on globe
-    renderCloudLayer(d);
-}
-
-function renderCloudLayer(cloudData) {
-    clearLayer('clouds');
-    if (!cloudData?.stations) return;
-    const layer = getLayer('clouds');
-
-    for (const st of cloudData.stations) {
-        const cc = st.cloud_cover?.total || 0;
-        if (cc < 20) continue; // skip clear skies
-
-        // Cloud disc at ~5km altitude (R * 1.0008 scale)
-        const cloudR = R * 1.005;
-        const pos = ll2v(st.lat, st.lon, cloudR);
-        const size = 0.04 + cc / 100 * 0.06; // bigger for more cloud
-
-        // Color by type
-        let color, opacity;
-        if (st.charge_type === 'Cb dipole') {
-            color = 0xffcc44; opacity = 0.25; // bright yellow thunderstorm
-        } else if (st.charge_type === 'convective') {
-            color = 0xff8844; opacity = 0.15;
-        } else if (st.charge_type === 'stratiform') {
-            color = 0x88aacc; opacity = 0.08;
-        } else {
-            color = 0x6688aa; opacity = 0.04 + cc / 100 * 0.04; // gray for overcast
-        }
-
-        // Cloud halo
-        const cloudGeo = new THREE.SphereGeometry(size, 8, 8);
-        const cloudMat = new THREE.MeshBasicMaterial({
-            color, transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending,
-        });
-        const cloud = new THREE.Mesh(cloudGeo, cloudMat);
-        cloud.position.copy(pos);
-        cloud.userData = { type: 'cloud', ...st };
-        layer.add(cloud);
-
-        // Charge gradient arrow (if charged): vertical line showing dipole
-        if (st.charge_c > 1) {
-            const basePos = ll2v(st.lat, st.lon, R * 1.003);
-            const topPos = ll2v(st.lat, st.lon, R * 1.003 + 0.015 + st.charge_c / 100);
-            // Negative base (blue) to positive top (red)
-            const arrowGeo = new THREE.BufferGeometry().setFromPoints([basePos, topPos]);
-            const arrowMat = new THREE.LineBasicMaterial({
-                color: 0xff4488, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false,
-            });
-            layer.add(new THREE.Line(arrowGeo, arrowMat));
-
-            // Negative charge marker at base
-            const negGeo = new THREE.SphereGeometry(0.004, 6, 6);
-            const neg = new THREE.Mesh(negGeo, new THREE.MeshBasicMaterial({ color: 0x4466ff, transparent: true, opacity: 0.5 }));
-            neg.position.copy(basePos);
-            layer.add(neg);
-
-            // Positive charge marker at top
-            const posGeo = new THREE.SphereGeometry(0.004, 6, 6);
-            const posM = new THREE.Mesh(posGeo, new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.5 }));
-            posM.position.copy(topPos);
-            layer.add(posM);
-        }
-    }
-}
-
-// --- WEATHER INDICATORS ON GLOBE ---
-function renderWeatherMarkers(precipData) {
-    clearLayer('weather');
-    if (!precipData?.stations) return;
-    const layer = getLayer('weather');
-
-    for (const st of precipData.stations) {
-        const pos = ll2v(st.lat, st.lon, R * 1.012);
-        const isThunder = st.thunder_hours > 0;
-        const hasRain = st.total_72h_mm > 5;
-
-        if (!hasRain && !isThunder) continue;
-
-        // Rain: blue droplet column, height = precipitation amount
-        if (hasRain) {
-            const rainHeight = Math.min(0.12, st.total_72h_mm / 300);
-            const topPos = ll2v(st.lat, st.lon, R * 1.012 + rainHeight);
-            const rainGeo = new THREE.BufferGeometry().setFromPoints([pos, topPos]);
-            const rainMat = new THREE.LineBasicMaterial({
-                color: 0x4488ff, transparent: true,
-                opacity: Math.min(0.7, 0.2 + st.total_72h_mm / 100),
-                blending: THREE.AdditiveBlending, depthWrite: false,
-            });
-            const line = new THREE.Line(rainGeo, rainMat);
-            line.userData = { type: 'precip', ...st };
-            layer.add(line);
-
-            // Small glow at base
-            const baseGeo = new THREE.SphereGeometry(0.006, 6, 6);
-            const baseMat = new THREE.MeshBasicMaterial({
-                color: 0x4488ff, transparent: true, opacity: 0.4, depthWrite: false,
-            });
-            const base = new THREE.Mesh(baseGeo, baseMat);
-            base.position.copy(pos);
-            layer.add(base);
-        }
-
-        // Thunderstorm: yellow-orange flash marker
-        if (isThunder) {
-            // Lightning bolt (small zig-zag line)
-            const boltBase = ll2v(st.lat, st.lon, R * 1.015);
-            const boltTop = ll2v(st.lat, st.lon, R * 1.035 + st.thunder_hours * 0.003);
-            const boltMid1 = boltBase.clone().lerp(boltTop, 0.33);
-            boltMid1.x += 0.008; boltMid1.z += 0.005;
-            const boltMid2 = boltBase.clone().lerp(boltTop, 0.66);
-            boltMid2.x -= 0.006; boltMid2.z -= 0.004;
-            const boltGeo = new THREE.BufferGeometry().setFromPoints([boltBase, boltMid1, boltMid2, boltTop]);
-            const boltMat = new THREE.LineBasicMaterial({
-                color: 0xffcc44, transparent: true, opacity: 0.8,
-                blending: THREE.AdditiveBlending, depthWrite: false,
-            });
-            const bolt = new THREE.Line(boltGeo, boltMat);
-            bolt.name = 'thunder-bolt';
-            bolt.userData = { type: 'thunder', ...st };
-            layer.add(bolt);
-
-            // Glow halo
-            const glowGeo = new THREE.SphereGeometry(0.01 + st.thunder_hours * 0.002, 8, 8);
-            const glowMat = new THREE.MeshBasicMaterial({
-                color: 0xffaa22, transparent: true, opacity: 0.15,
-                depthWrite: false, blending: THREE.AdditiveBlending,
-            });
-            const glow = new THREE.Mesh(glowGeo, glowMat);
-            glow.position.copy(ll2v(st.lat, st.lon, R * 1.02));
-            glow.name = 'thunder-glow';
-            layer.add(glow);
-        }
-    }
-}
-
-// Animate thunder flicker
-function animateWeather(frame) {
-    const layer = layerGroups['weather'];
-    if (!layer) return;
-    layer.children.forEach(c => {
-        if (c.name === 'thunder-bolt') {
-            // Random flicker
-            c.material.opacity = 0.3 + 0.5 * (Math.sin(frame * 0.5 + Math.random() * 10) > 0.3 ? 1 : 0);
-        }
-        if (c.name === 'thunder-glow') {
-            c.material.opacity = 0.08 + 0.12 * Math.sin(frame * 0.15 + c.position.x * 10);
-        }
-    });
-}
-
-function updDst(data) {
-    if (!data) return;
-    const el = document.getElementById('dst-metric'), st = document.getElementById('st-dst');
-    if (data.current != null) {
-        el.textContent = `${data.current} nT`;
-        el.className = 'm ' + (data.current > -30 ? 'q' : data.current > -50 ? 'a' : 's');
-        st.textContent = `${data.current}`;
-        st.className = 'v ' + (data.current > -30 ? 'g' : data.current > -50 ? '' : 'w');
-    }
-}
+function updKp(d) { if (!d?.current) return; const k = d.current, el = document.getElementById('kp-metric'); el.textContent = `Kp ${k.toFixed(0)}`; el.className = 'm ' + (k < 4 ? 'q' : k < 6 ? 'a' : 's'); const s = document.getElementById('st-kp'); s.textContent = k.toFixed(0); s.className = 'v ' + (k < 4 ? 'g' : k < 6 ? '' : 'w'); }
+function updSW(d) { if (!d) return; if (d.current_bz != null) { const e = document.getElementById('st-bz'); e.textContent = `${d.current_bz.toFixed(1)}`; e.className = 'v ' + (d.current_bz < -10 ? 'w' : 'g'); } if (d.current_speed != null) { const e = document.getElementById('st-vsw'); e.textContent = `${d.current_speed.toFixed(0)}`; e.className = 'v ' + (d.current_speed > 600 ? 'w' : 'g'); } drawChart('sw-chart', d.bz, { color: '#ff6666', fillNeg: true, dec: 1 }); }
+function updXRS(d) { if (!d) return; if (d.current_flux) { const f = d.current_flux; const cl = f >= 1e-4 ? `X${(f / 1e-4).toFixed(1)}` : f >= 1e-5 ? `M${(f / 1e-5).toFixed(1)}` : f >= 1e-6 ? `C${(f / 1e-6).toFixed(1)}` : 'B'; document.getElementById('st-xrs').textContent = cl; } drawXRS(d); const el = document.getElementById('op-state'); el.textContent = d.state || '?'; el.className = 'state ' + (d.state === 'FALLING' ? 'falling' : d.state === 'RISING' ? 'rising' : 'stable'); }
+function updSun(d) { if (!d?.images) return; window._si = d.images; const img = document.getElementById('sun-image'); if (!img.dataset.loaded) { img.src = d.images.eit_195 || Object.values(d.images)[0]; img.dataset.loaded = '1'; } }
+function updLunar(d) { if (!d) return; document.getElementById('lunar-metric').textContent = `${d.name}`; document.getElementById('lunar-detail').textContent = `${d.illumination}% | F:${d.tidal_force.toFixed(2)} | dF:${d.tidal_rate.toFixed(2)}`; document.getElementById('st-moon').textContent = `${d.illumination}%`; }
+function updCR(d) { if (!d?.stations) return; const ks = Object.keys(d.stations); if (!ks.length) return; const avg = ks.reduce((s, k) => s + d.stations[k].deviation_pct, 0) / ks.length; const el = document.getElementById('cr-metric'); el.textContent = `${avg > 0 ? '+' : ''}${avg.toFixed(1)}%`; el.className = 'm ' + (d.forbush_detected ? 's' : 'q'); document.getElementById('cr-detail').textContent = d.forbush_detected ? 'FORBUSH DECREASE' : `${ks.length} stations nominal`; document.getElementById('st-cr').textContent = `${avg > 0 ? '+' : ''}${avg.toFixed(1)}%`; document.getElementById('st-cr').className = 'v ' + (d.forbush_detected ? 'w' : 'g'); }
+function updGlobalCR(d) { if (!d || d.error) return; const stEl = document.getElementById('cr-stations'); if (stEl) stEl.textContent = `${d.n_stations || 0} stations`; if (d.global_mean != null) { const el = document.getElementById('cr-metric'); if (el) { el.textContent = `${d.global_mean > 0 ? '+' : ''}${d.global_mean.toFixed(1)}%`; el.className = 'm ' + (d.forbush ? 's' : 'q'); } const fb = document.getElementById('cr-forbush'); if (fb) { fb.textContent = d.forbush ? 'FORBUSH DECREASE' : 'nominal'; fb.style.color = d.forbush ? '#f44' : '#4f4'; } } }
+function updTEC(d) { if (!d) return; const el = document.getElementById('tec-metric'); const det = document.getElementById('tec-detail'); if (d.available) { if (el) { el.textContent = 'LIVE'; el.className = 'm q'; } if (det) det.textContent = d.dataset || 'USTEC'; } else { if (el) { el.textContent = 'N/A'; el.className = 'm'; } if (det) det.textContent = d.note?.substring(0, 30) || 'unavailable'; } }
+function updPrecip(d) { if (!d) return; const el = document.getElementById('precip-metric'); const det = document.getElementById('precip-detail'); if (el) { el.textContent = `${d.global_precip_72h || 0} mm`; el.className = 'm ' + (d.global_precip_72h > 100 ? 'a' : 'q'); } if (det) { const thunder = d.global_thunder_hours || 0; det.textContent = `${d.n_stations || 0} sites | ${thunder} storm-hrs`; } renderWeatherMarkers(d); }
+function updLightning(d) { if (!d) return; const el = document.getElementById('lightning-metric'); const det = document.getElementById('lightning-detail'); if (el) { const clim = d.climatology; if (clim) { el.textContent = clim.month; el.style.color = '#ffaa44'; } const rt = d.realtime_thunder_hours || 0; if (rt > 0 && el) el.textContent += ` (${rt}h)`; } if (det && d.climatology?.hotspots) { const top = d.climatology.hotspots.sort((a, b) => b.mean_density - a.mean_density)[0]; det.textContent = top ? `peak: ${top.name}` : 'WWLLN climatology'; } }
+function updPorePressure(d) { if (!d?.stations) return; const container = document.getElementById('pore-bars'); if (!container) return; container.innerHTML = d.stations.map(st => { const pp = st.depth_profile?.['100m']; if (!pp) return ''; const pct = pp.pct_tectonic; const barW = Math.min(100, pct * 3000); const color = pct > 0.01 ? '#ff4444' : pct > 0.005 ? '#ffaa44' : '#44aaff'; const name = st.name.split('(')[0].trim().substring(0, 12); return `<div class="det-row"><span class="det-label">${name}</span><div class="det-bar-bg"><div class="det-bar" style="width:${barW}%;background:${color}"></div></div><span class="det-score" style="color:${color}">${pp.total_pa.toFixed(0)}</span></div>`; }).join(''); const tidalEl = document.getElementById('pp-tidal'); if (tidalEl && d.inputs) { tidalEl.textContent = d.inputs.tidal_force > 0 ? 'spring' : 'neap'; tidalEl.style.color = Math.abs(d.inputs.tidal_force) > 0.7 ? '#88aaff' : '#556'; } const jzEl = document.getElementById('pp-jz'); if (jzEl && d.inputs) jzEl.textContent = d.inputs.telluric_j_mA_km?.toFixed(1) || '--'; }
+function updCloudCharge(d) { if (!d?.stations) return; const ezEl = document.getElementById('cc-ez'); const stormEl = document.getElementById('cc-storms'); const chargeEl = document.getElementById('cc-charge'); if (ezEl) { const avgEz = d.stations.reduce((s, st) => s + (st.ez_v_m || 0), 0) / Math.max(d.stations.length, 1); ezEl.textContent = avgEz.toFixed(0); } if (stormEl) stormEl.textContent = d.active_thunderstorms || 0; if (chargeEl) chargeEl.textContent = d.global_charge_c?.toFixed(0) || '0'; const container = document.getElementById('cc-stations'); if (container) { container.innerHTML = d.stations.filter(st => st.charge_c > 0 || st.cloud_cover?.total > 50).map(st => { const cc = st.cloud_cover?.total || 0; const color = st.charge_type === 'Cb dipole' ? '#ffcc44' : st.charge_type === 'convective' ? '#ff8844' : '#4488ff'; return `<div style="display:flex;justify-content:space-between;font-size:8px;margin-bottom:1px;"><span style="color:#778;">${st.name}</span><span style="color:${color};">${st.charge_type} ${st.charge_c > 0 ? st.charge_c + 'C' : cc + '%'}</span></div>`; }).join(''); } renderCloudLayer(d); }
+function updDst(data) { if (!data) return; const el = document.getElementById('dst-metric'), st = document.getElementById('st-dst'); if (data.current != null) { el.textContent = `${data.current} nT`; el.className = 'm ' + (data.current > -30 ? 'q' : data.current > -50 ? 'a' : 's'); st.textContent = `${data.current}`; st.className = 'v ' + (data.current > -30 ? 'g' : data.current > -50 ? '' : 'w'); } }
 
 // Sun image selector
 document.querySelectorAll('#sun-selector button').forEach(b => {
     b.addEventListener('click', () => {
         document.querySelectorAll('#sun-selector button').forEach(x => x.classList.remove('on'));
         b.classList.add('on');
-        if (window._si?.[b.dataset.img])
-            document.getElementById('sun-image').src = window._si[b.dataset.img] + '?t=' + Date.now();
+        if (window._si?.[b.dataset.img]) document.getElementById('sun-image').src = window._si[b.dataset.img] + '?t=' + Date.now();
     });
 });
 
-// ===== Tooltip =====
-const ray = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-const tip = document.createElement('div');
-tip.style.cssText = 'position:fixed;background:rgba(5,5,16,0.95);color:#ccc;font:11px monospace;padding:6px 10px;border:1px solid #00ccff;border-radius:4px;pointer-events:none;display:none;z-index:1000;max-width:280px;';
-document.body.appendChild(tip);
-
-box.addEventListener('mousemove', e => {
-    const r = box.getBoundingClientRect();
-    mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
-    mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
-    ray.setFromCamera(mouse, camera);
-
-    // Check earthquakes
-    const eqLayer = layerGroups['earthquakes'];
-    if (eqLayer) {
-        const hits = ray.intersectObjects(eqLayer.children);
-        const hit = hits.find(h => h.object.userData?.mag);
-        if (hit) {
-            const eq = hit.object.userData, ageH = (Date.now() - eq.time) / 3600000;
-            const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
-            tip.innerHTML = `<b style="color:#ff6644">M${eq.mag.toFixed(1)}</b> ${eq.place}<br>Depth: ${eq.depth?.toFixed(0) || '?'}km | ${ageH.toFixed(1)}h ago<br>${eq.ang_dist}deg | <span style="color:${zc[eq.zone] || '#888'}">${eq.zone}</span>`;
-            tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
-            box.style.cursor = 'pointer';
-            return;
-        }
-    }
-
-    // Check plates
-    const plateLayer = layerGroups['plates'];
-    if (plateLayer?.visible) {
-        const hits = ray.intersectObjects(plateLayer.children);
-        const hit = hits.find(h => h.object.userData?.type === 'plate');
-        if (hit) {
-            const p = hit.object.userData;
-            tip.innerHTML = `<b style="color:#4488ff">${p.name}</b><br><span style="color:#889">${p.boundary_type}</span>`;
-            tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
-            box.style.cursor = 'pointer';
-            return;
-        }
-    }
-
-    // Check weather markers
-    const wxLayer = layerGroups['weather'];
-    if (wxLayer?.visible) {
-        const hits = ray.intersectObjects(wxLayer.children);
-        const hit = hits.find(h => h.object.userData?.type === 'precip' || h.object.userData?.type === 'thunder');
-        if (hit) {
-            const w = hit.object.userData;
-            if (w.type === 'thunder') {
-                tip.innerHTML = `<b style="color:#ffcc44">${w.name}</b><br>${w.thunder_hours}h thunderstorm<br>${w.total_72h_mm}mm rain (72h)`;
-            } else {
-                tip.innerHTML = `<b style="color:#4488ff">${w.name}</b><br>${w.total_72h_mm}mm rain (72h)<br>${w.current_mm}mm/hr now`;
-            }
-            tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY - 10) + 'px';
-            box.style.cursor = 'pointer';
-            return;
-        }
-    }
-
-    tip.style.display = 'none';
-    box.style.cursor = 'grab';
-});
-
-// Click handler
-box.addEventListener('click', e => {
-    const r = box.getBoundingClientRect();
-    mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
-    mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
-    ray.setFromCamera(mouse, camera);
-
-    const eqLayer = layerGroups['earthquakes'];
-    if (eqLayer) {
-        const hits = ray.intersectObjects(eqLayer.children);
-        const hit = hits.find(h => h.object.userData?.mag);
-        if (hit) { showDetail(hit.object.userData); return; }
-    }
-    const magLayer = layerGroups['magnetometers'];
-    if (magLayer?.visible) {
-        const hits = ray.intersectObjects(magLayer.children);
-        const hit = hits.find(h => h.object.userData?.type === 'magnetometer');
-        if (hit) { showMagDetail(hit.object.userData); return; }
-    }
-    document.getElementById('detail').style.display = 'none';
-});
-
-function showDetail(eq) {
-    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
-    const ageH = (Date.now() - eq.time) / 3600000, dt = new Date(eq.time);
-    const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
-    const zr = { eye: '0.85x', inner: '0.92x', transition: '0.98x', wavefront: '1.36x', 'wavefront-tail': '1.09x', neutral: '0.95x', 'far-suppress': '0.82x', 'far-neutral': '0.90x', 'pre-antipodal': '1.00x', antipodal: '1.16x' };
-    content.innerHTML = `<h3>M${eq.mag.toFixed(1)} ${eq.place || 'Unknown'}</h3>
-        <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T', ' ').substring(0, 19)} UTC</span></div>
-        <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH * 60).toFixed(0) + ' min' : ageH.toFixed(1) + ' hours'} ago</span></div>
-        <div class="row"><span class="k">Location</span><span class="val">${eq.lat.toFixed(3)}N, ${eq.lon.toFixed(3)}E</span></div>
-        <div class="row"><span class="k">Depth</span><span class="val">${eq.depth?.toFixed(1) || '?'} km</span></div>
-        <div class="row"><span class="k">Subsolar dist</span><span class="val">${eq.ang_dist} deg</span></div>
-        <div class="row"><span class="k">Jelly Ball zone</span><span class="zone-badge" style="background:${zc[eq.zone] || '#444'};color:#fff">${eq.zone} (${zr[eq.zone] || '?'})</span></div>
-        <div style="margin-top:8px;border-top:1px solid #222;padding-top:6px;"><a href="https://earthquake.usgs.gov/earthquakes/eventpage/${eq.id || ''}" target="_blank">USGS Event Page &rarr;</a></div>`;
-    panel.style.display = 'block';
-}
-
-function showMagDetail(st) {
-    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
-    content.innerHTML = `<h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
-        <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
-        <div class="row"><span class="k">Location</span><span class="val">${st.lat.toFixed(2)}N, ${st.lon.toFixed(2)}E</span></div>
-        ${st.live ? `<div style="margin-top:6px;border-top:1px solid #222;padding-top:6px;">
-            <div class="row"><span class="k">B_X</span><span class="val">${st.live.X?.toFixed(1) || '?'} nT</span></div>
-            <div class="row"><span class="k">B_Y</span><span class="val">${st.live.Y?.toFixed(1) || '?'} nT</span></div>
-            <div class="row"><span class="k">B_Z</span><span class="val">${st.live.Z?.toFixed(1) || '?'} nT</span></div>
-        </div>` : '<div class="d" style="margin-top:6px">No live data</div>'}`;
-    panel.style.display = 'block';
-}
-
-// ===== PALEOMAG =====
+// Paleomag
 let palemagData = null;
 async function loadPaleomag() { palemagData = await fetchJSON('/paleomag'); if (palemagData?.sites) drawPaleomagChart(); }
 function drawPaleomagChart() {
@@ -1257,7 +1788,6 @@ function drawPaleomagChart() {
     };
     drawSite('Greece', '#44aaff', false); drawSite('Anatolia', '#ffaa44', false); drawSite('Egypt', '#44ff44', false);
     drawSite('Levant', '#ff4444', true); drawSite('China', '#ffff44', true);
-    ctx.font = '12px monospace'; ctx.fillStyle = '#ff4444'; ctx.fillText('Levant', 4, h - 8); ctx.fillStyle = '#ffff44'; ctx.fillText('China', 70, h - 8);
 }
 document.getElementById('paleomag-toggle')?.addEventListener('change', e => {
     const panel = document.getElementById('paleomag-panel');
@@ -1265,39 +1795,34 @@ document.getElementById('paleomag-toggle')?.addEventListener('change', e => {
     if (e.target.checked && !palemagData) loadPaleomag();
 });
 
-// ===== TIME SLIDER =====
+// Clock + time slider
 const timeSlider = document.getElementById('time-slider');
 const timeVal = document.getElementById('time-val');
 const timeLive = document.getElementById('time-live');
 let isLive = true, historyHoursBack = 0;
 if (timeSlider) {
     document.getElementById('time-control').classList.add('visible');
-    timeSlider.addEventListener('input', () => {
-        historyHoursBack = parseInt(timeSlider.value);
-        isLive = historyHoursBack === 0;
-        timeVal.textContent = isLive ? 'LIVE' : `-${historyHoursBack}h`;
-        timeLive.classList.toggle('on', isLive);
-    });
-    timeLive.addEventListener('click', () => { timeSlider.value = 0; historyHoursBack = 0; isLive = true; timeVal.textContent = 'LIVE'; timeLive.classList.add('on'); });
+    timeSlider.addEventListener('input', () => { historyHoursBack = parseInt(timeSlider.value); isLive = historyHoursBack === 0; timeVal.textContent = isLive ? 'LIVE' : `-${historyHoursBack}h`; timeLive?.classList.toggle('on', isLive); });
+    timeLive?.addEventListener('click', () => { timeSlider.value = 0; historyHoursBack = 0; isLive = true; timeVal.textContent = 'LIVE'; timeLive.classList.add('on'); });
 }
-
-// Clock
 setInterval(() => {
     const now = isLive ? new Date() : new Date(Date.now() - historyHoursBack * 3600000);
     document.getElementById('clock').textContent = now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC' + (isLive ? '' : ` (-${historyHoursBack}h)`);
 }, 1000);
 
-// ===== Layer toggles =====
+// Layer toggles
 document.querySelectorAll('[data-layer]').forEach(inp => {
-    inp.addEventListener('change', () => { const g = layerGroups[inp.dataset.layer]; if (g) g.visible = inp.checked; });
+    inp.addEventListener('change', () => setLayerVisible(inp.dataset.layer, inp.checked));
 });
 setTimeout(() => {
     document.querySelectorAll('[data-layer]').forEach(inp => {
-        if (!inp.checked && layerGroups[inp.dataset.layer]) layerGroups[inp.dataset.layer].visible = false;
+        if (!inp.checked) setLayerVisible(inp.dataset.layer, false);
     });
-}, 200);
+}, 500);
 
-// ===== MAIN POLL =====
+// ============================================================
+// MAIN POLL
+// ============================================================
 async function poll() {
     const results = await Promise.allSettled([
         fetchJSON('/earthquakes'),     // 0
@@ -1323,7 +1848,7 @@ async function poll() {
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
-    if (v(1)) { updateSubsolar(v(1)); updateJellyBall(v(1)); updateTerminator(v(1)); }
+    if (v(1)) { updateSubsolar(v(1)); updateJellyBall(v(1)); updateTerminator(v(1)); buildMagneticField(v(1)); buildSolarWindFlow(v(1)); }
     if (v(2)) updKp(v(2));
     if (v(3)) {
         updSW(v(3));
@@ -1337,7 +1862,7 @@ async function poll() {
     if (v(7)) updCR(v(7));
     if (v(8)) updDst(v(8));
     if (v(9)) updateMagnetometers(v(9));
-    if (v(10)) updFieldStrengths(v(10));
+    if (v(10)) { updFieldStrengths(v(10)); buildTelluricCurrents(v(10)); }
     if (v(11)) drawSeismogram(v(11));
     if (v(12)) updJellyBall(v(12));
     if (v(13)) updNeural(v(13));
@@ -1347,7 +1872,6 @@ async function poll() {
     if (v(17)) updLightning(v(17));
     if (v(18)) updPorePressure(v(18));
     if (v(19)) updCloudCharge(v(19));
-    // Update magnetosphere storm visualization from Kp + Dst
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;
     updateStormLevel(kpVal, dstVal);
@@ -1358,35 +1882,24 @@ setInterval(poll, POLL);
 // ============================================================
 // SOLAR MONITOR INTEGRATION
 // ============================================================
-
 const DET_NAMES = ['zscore', 'cusum', 'hardness', 'rate', 'multichannel', 'proton', 'criticality'];
 function scoreColor(score) { return score < 0.3 ? '#44ff44' : score < 0.5 ? '#aaff44' : score < 0.7 ? '#ffaa44' : '#ff4444'; }
 
 function updDetectors(data) {
     if (!data || data.error) return;
-
-    // Solar monitor returns: { fused_score, alert, raw_scores: [{name, raw_score, percentile_rank}], detector_agreement }
-    // OR from /status: { fusion_diagnostics: { fused_score, raw_scores, detector_agreement } }
     const diag = data.fusion_diagnostics || data;
     const detectors = diag.raw_scores || diag.detectors || [];
-
     if (Array.isArray(detectors)) {
         detectors.forEach(d => {
             const name = (d.name || '').toLowerCase().replace(/[_\s-]/g, '');
             const matchName = DET_NAMES.find(n => name.includes(n)) || name;
-            // Use percentile_rank for bar (0-1 scale), raw_score for tooltip
             const val = d.percentile_rank ?? d.score ?? d.raw_score ?? null;
             const bar = document.getElementById(`det-${matchName}`);
             const scoreEl = document.getElementById(`ds-${matchName}`);
-            if (bar && val != null) {
-                const pct = Math.min(100, val * 100);
-                bar.style.width = pct + '%';
-                bar.style.background = scoreColor(val);
-            }
+            if (bar && val != null) { bar.style.width = Math.min(100, val * 100) + '%'; bar.style.background = scoreColor(val); }
             if (scoreEl && val != null) scoreEl.textContent = val.toFixed(2);
         });
     }
-
     const fused = diag.fused_score ?? data.fused_score ?? data.fused_flare_score ?? data.fused ?? null;
     if (fused != null) {
         const fill = document.getElementById('fused-fill'), label = document.getElementById('fused-label');
@@ -1395,26 +1908,19 @@ function updDetectors(data) {
         const stF = document.getElementById('st-fused');
         if (stF) { stF.textContent = fused.toFixed(2); stF.className = 'v ' + (fused < 0.3 ? 'g' : fused < 0.7 ? '' : 'w'); }
     }
-
-    // detector_agreement can be at top level (/status) or inside diagnostics (/detectors)
     const agree = data.detector_agreement ?? diag.detector_agreement ?? data.agreement ?? null;
     if (agree != null) { const el = document.getElementById('det-agreement'); if (el) el.textContent = agree; }
 }
 
 function updEscalation(data) {
     if (!data || data.error) return;
-    // Solar monitor returns: { level: "Quiet", level_label: "QUIET", peak_fused, hardness_spikes_in_window }
     const level = (data.level_label || data.level || data.state || 'quiet').toLowerCase();
     const el = document.getElementById('esc-state');
     if (el) { el.textContent = level.toUpperCase(); el.className = 'esc-badge esc-' + level; }
     const stE = document.getElementById('st-esc');
     if (stE) { stE.textContent = level.toUpperCase(); stE.className = 'v ' + (level === 'quiet' ? 'g' : level === 'flare' ? 'w' : ''); }
     const detail = document.getElementById('esc-detail');
-    if (detail) {
-        const spikes = data.hardness_spikes_in_window ?? data.hardness_spike_count ?? '--';
-        const peak = data.peak_fused ?? data.peak ?? '--';
-        detail.textContent = `Spikes: ${spikes} | Peak: ${typeof peak === 'number' ? peak.toFixed(2) : peak}`;
-    }
+    if (detail) { const spikes = data.hardness_spikes_in_window ?? data.hardness_spike_count ?? '--'; const peak = data.peak_fused ?? data.peak ?? '--'; detail.textContent = `Spikes: ${spikes} | Peak: ${typeof peak === 'number' ? peak.toFixed(2) : peak}`; }
 }
 
 const PW_NAMES = ['forbush', 'heep', 'ssc', 'mansurov', 'lunar'];
@@ -1422,15 +1928,11 @@ const PW_COLORS = { forbush: '#6644ff', heep: '#44ffaa', ssc: '#ff44aa', mansuro
 
 function updPathways(data) {
     if (!data || data.error) return;
-    // Solar monitor returns: array of {name, score, effect, active, details}
-    // OR from /status: { stressor: { pathways: [...], total } }
     const stressor = data.stressor || data;
     const pathways = stressor.pathways || (Array.isArray(data) ? data : []);
     let totalStress = 0;
-
     const pwList = Array.isArray(pathways) ? pathways : Object.values(pathways);
     pwList.forEach(pw => {
-        // Match "Forbush Chain" -> forbush, "SSC Telluric" -> ssc, "Lunar Tidal" -> lunar
         const name = (pw.name || pw.pathway || '').toLowerCase().replace(/[_\s-]/g, '');
         const matchName = PW_NAMES.find(n => name.includes(n));
         if (!matchName) return;
@@ -1440,25 +1942,14 @@ function updPathways(data) {
         const bar = document.getElementById(`pw-${matchName}`);
         const dirEl = document.getElementById(`pwd-${matchName}`);
         const scoreEl = document.getElementById(`pws-${matchName}`);
-        if (bar) {
-            bar.style.width = Math.min(100, Math.abs(score) * 100) + '%';
-            bar.style.background = pw.active ? PW_COLORS[matchName] || '#888' : '#333';
-        }
-        if (dirEl) {
-            dirEl.textContent = isSuppression ? '-' : '+';
-            dirEl.style.color = isSuppression ? '#f44' : '#4f4';
-        }
+        if (bar) { bar.style.width = Math.min(100, Math.abs(score) * 100) + '%'; bar.style.background = pw.active ? PW_COLORS[matchName] || '#888' : '#333'; }
+        if (dirEl) { dirEl.textContent = isSuppression ? '-' : '+'; dirEl.style.color = isSuppression ? '#f44' : '#4f4'; }
         if (scoreEl) scoreEl.textContent = Math.abs(score).toFixed(2);
         totalStress += isSuppression ? -Math.abs(score) : Math.abs(score);
     });
-
     const stressIdx = stressor.total ?? data.total_stress ?? data.stressor_index ?? totalStress;
     const stressEl = document.getElementById('stress-val');
-    if (stressEl) {
-        const val = typeof stressIdx === 'number' ? stressIdx : totalStress;
-        stressEl.textContent = (val >= 0 ? '+' : '') + val.toFixed(2);
-        stressEl.style.color = val > 0.3 ? '#f44' : val > 0 ? '#ff4' : '#4f4';
-    }
+    if (stressEl) { const val = typeof stressIdx === 'number' ? stressIdx : totalStress; stressEl.textContent = (val >= 0 ? '+' : '') + val.toFixed(2); stressEl.style.color = val > 0.3 ? '#f44' : val > 0 ? '#ff4' : '#4f4'; }
 }
 
 // SSE Streams
@@ -1466,75 +1957,34 @@ let solarConnected = false;
 function connectSSE() {
     try {
         const sse = new EventSource(`${SOLAR_API}/metrics`);
-        sse.onopen = () => {
-            solarConnected = true;
-            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live';
-            const st = document.getElementById('solar-status'); if (st) st.textContent = '(LIVE)';
-        };
-        sse.onmessage = e => {
-            try {
-                const d = JSON.parse(e.data);
-                // Metrics SSE can send full status snapshots
-                if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d);
-                if (d.escalation) updEscalation(d.escalation);
-                else if (d.level || d.level_label) updEscalation(d);
-                if (d.stressor?.pathways) updPathways(d.stressor);
-                else if (d.pathways || Array.isArray(d)) updPathways(d);
-                if (d.feeds?.imf_bz != null) updateMagnetosphereCompression(d.feeds.imf_bz);
-            } catch (_) { }
-        };
-        sse.onerror = () => {
-            solarConnected = false;
-            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot dead';
-            const st = document.getElementById('solar-status'); if (st) st.textContent = '(polling)';
-        };
+        sse.onopen = () => { solarConnected = true; const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live'; const st = document.getElementById('solar-status'); if (st) st.textContent = '(LIVE)'; };
+        sse.onmessage = e => { try { const d = JSON.parse(e.data); if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d); if (d.escalation) updEscalation(d.escalation); else if (d.level || d.level_label) updEscalation(d); if (d.stressor?.pathways) updPathways(d.stressor); else if (d.pathways || Array.isArray(d)) updPathways(d); if (d.feeds?.imf_bz != null) updateMagnetosphereCompression(d.feeds.imf_bz); } catch (_) { } };
+        sse.onerror = () => { solarConnected = false; const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot dead'; const st = document.getElementById('solar-status'); if (st) st.textContent = '(polling)'; };
     } catch (_) { }
     try {
         const alerts = new EventSource(`${SOLAR_API}/alerts`);
-        alerts.onmessage = e => {
-            try {
-                const a = JSON.parse(e.data);
-                const banner = document.getElementById('alert-banner');
-                if (!banner) return;
-                const type = a.type || a.kind || '', msg = a.message || a.msg || JSON.stringify(a);
-                banner.textContent = `${type.toUpperCase()}: ${msg}`;
-                banner.style.display = 'block';
-                banner.style.background = type.includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)';
-                setTimeout(() => { banner.style.display = 'none'; }, 15000);
-            } catch (_) { }
-        };
+        alerts.onmessage = e => { try { const a = JSON.parse(e.data); const banner = document.getElementById('alert-banner'); if (!banner) return; const type = a.type || a.kind || '', msg = a.message || a.msg || JSON.stringify(a); banner.textContent = `${type.toUpperCase()}: ${msg}`; banner.style.display = 'block'; banner.style.background = type.includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)'; setTimeout(() => { banner.style.display = 'none'; }, 15000); } catch (_) { } };
     } catch (_) { }
 }
 connectSSE();
 
-// Solar monitor polling fallback — uses /status for all-in-one, falls back to individual endpoints
 async function pollSolar() {
     try {
-        // Try /status first (single request with everything)
-        const [statusResp, feedsResp] = await Promise.all([
-            fetch(`${SOLAR_API}/status`),
-            fetch(`${SOLAR_API}/feeds`),
-        ]);
+        const [statusResp, feedsResp] = await Promise.all([fetch(`${SOLAR_API}/status`), fetch(`${SOLAR_API}/feeds`)]);
         const status = await statusResp.json();
         const feeds = await feedsResp.json();
         if (status && !status.error) {
             updDetectors(status);
             if (status.escalation) updEscalation(status.escalation);
             if (status.stressor) updPathways(status.stressor);
-            // Feed live particle data to solar wind visualization
             if (feeds && !feeds.error) updateSolarWindData(feeds);
-            // Extract proton detector score for SEP particles
             const protonDet = status.fusion_diagnostics?.raw_scores?.find(d => d.name === 'proton');
             if (protonDet) swProtonScore = protonDet.percentile_rank;
-            const dot = document.getElementById('solar-conn');
-            if (dot) dot.className = 'conn-dot live';
-            const st = document.getElementById('solar-status');
-            if (st) st.textContent = solarConnected ? '(LIVE)' : '(polling)';
+            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live';
+            const st = document.getElementById('solar-status'); if (st) st.textContent = solarConnected ? '(LIVE)' : '(polling)';
             return;
         }
     } catch (_) { }
-
-    // Fallback: individual endpoints
     try {
         const [detR, escR, pwR] = await Promise.allSettled([
             fetch(`${SOLAR_API}/detectors`).then(r => r.json()),
@@ -1549,661 +1999,5 @@ async function pollSolar() {
 pollSolar();
 setInterval(pollSolar, POLL);
 
-// ============================================================
-// THREE.JS PHYSICS VISUALIZATIONS
-// ============================================================
-
-// ===== SUN OBJECT =====
-const SUN_X = 10; // far enough to be clearly separate from Earth
-fixedLayers.add('sun-object');
-(function buildSun() {
-    const layer = getLayer('sun-object');
-    // Core — bright enough to trigger bloom
-    const sunMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.6, 32, 32),
-        new THREE.MeshBasicMaterial({ color: 0xffdd55 })
-    );
-    sunMesh.position.set(SUN_X, 0, 0);
-    layer.add(sunMesh);
-    // Corona glow
-    const corona = new THREE.Mesh(
-        new THREE.SphereGeometry(0.9, 32, 32),
-        new THREE.MeshBasicMaterial({ color: 0xffaa22, transparent: true, opacity: 0.15, side: THREE.BackSide, depthWrite: false })
-    );
-    corona.position.set(SUN_X, 0, 0);
-    layer.add(corona);
-})();
-
-// ===== MAGNETOSPHERE =====
-let magnetoCompression = 1.0;
-let stormLevel = 0;
-let currentBz = 0;
-let currentKp = 2;
-let currentDst = 0;
-let reconnectionPositions = null, reconnectionPts = null;
-
-// Bow shock standoff — particles deflect here, visuals drawn here
-const BOW_STANDOFF = () => 1.6 * magnetoCompression + 0.2;
-
-function buildMagnetosphere() {
-    clearLayer('magnetosphere');
-    const layer = getLayer('magnetosphere');
-    const comp = magnetoCompression;
-    const storm = stormLevel;
-    const S = 0.5; // scale factor for field lines (keeps them close to globe)
-
-    // --- DIPOLE FIELD LINES (bright cyan, 2 meridional planes) ---
-    // Like the reference: clean arcs from pole to pole, compressed sunward
-    const cyan = new THREE.Color(0x00ccff);
-    const cyanDim = new THREE.Color(0x2288aa);
-
-    for (let p = 0; p < 4; p++) {
-        const phi = (p / 4) * Math.PI; // 4 half-planes = 8 visual planes
-        for (let s = 0; s < 5; s++) {
-            const L = 2.0 + s * 0.7;
-            const pts = [];
-            for (let j = 0; j <= 80; j++) {
-                const theta = (j / 80) * Math.PI;
-                const r = L * Math.sin(theta) * Math.sin(theta);
-                let x = r * Math.sin(theta) * Math.cos(phi);
-                let y = r * Math.cos(theta);
-                let z = r * Math.sin(theta) * Math.sin(phi);
-
-                // Compress sunward side
-                if (x > 0) x *= comp * 0.7;
-                // Stretch nightside into tail
-                if (x < 0) {
-                    x *= 1 + (1 - comp) * 0.8 + s * 0.15;
-                    y *= 1 - s * 0.04 * Math.min(1, Math.abs(x * S));
-                }
-                pts.push(new THREE.Vector3(x * S, y * S, z * S));
-            }
-            const color = s < 2 ? cyan : cyanDim;
-            const opacity = s < 2 ? 0.5 : 0.25;
-            layer.add(new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints(pts),
-                new THREE.LineBasicMaterial({ color, transparent: true, opacity })
-            ));
-        }
-    }
-
-    // --- BOW SHOCK (bright line arc at standoff distance, not a surface) ---
-    const bowR = BOW_STANDOFF();
-    const bowColor = storm > 0.5 ? 0xff6644 : 0x44ddff;
-    // Main arc — parabolic cross-section in 4 meridional planes
-    for (let m = 0; m < 4; m++) {
-        const angle = (m / 4) * Math.PI;
-        const pts = [];
-        for (let i = 0; i <= 40; i++) {
-            const t = (i / 40) * Math.PI * 0.5; // 0 to 90 deg from nose
-            const rCross = bowR * Math.sin(t);
-            const xBow = bowR * Math.cos(t);
-            pts.push(new THREE.Vector3(xBow, rCross * Math.sin(angle), rCross * Math.cos(angle)));
-        }
-        layer.add(new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.4 })
-        ));
-    }
-    // Cross-ring at nose
-    const noseRingPts = [];
-    for (let i = 0; i <= 64; i++) {
-        const a = (i / 64) * Math.PI * 2;
-        const rr = bowR * 0.3;
-        noseRingPts.push(new THREE.Vector3(bowR * 0.95, rr * Math.sin(a), rr * Math.cos(a)));
-    }
-    layer.add(new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(noseRingPts),
-        new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.35 })
-    ));
-
-    // --- AURORA OVALS ---
-    const auroraLat = 70 - storm * 12;
-    for (const isNorth of [true, false]) {
-        const pts = [];
-        const lat = isNorth ? auroraLat : -auroraLat;
-        for (let i = 0; i <= 80; i++) pts.push(ll2v(lat, (i / 80) * 360 - 180, R * 1.008));
-        const line = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.15 + storm * 0.5 })
-        );
-        line.name = isNorth ? 'aurora-n-1' : 'aurora-s-1';
-        layer.add(line);
-    }
-
-    // --- RING CURRENT (torus) ---
-    const rcIntensity = Math.min(1, Math.abs(currentDst) / 100);
-    const rcMesh = new THREE.Mesh(
-        new THREE.TorusGeometry(0.25, 0.02 + storm * 0.02, 12, 48),
-        new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(0.08, 0.9, 0.4 + rcIntensity * 0.3), transparent: true, opacity: 0.06 + rcIntensity * 0.15, depthWrite: false })
-    );
-    rcMesh.rotation.x = Math.PI / 2;
-    layer.add(rcMesh);
-
-    // --- RECONNECTION (Bz southward) ---
-    if (currentBz < -3) {
-        const nParts = 50;
-        reconnectionPositions = new Float32Array(nParts * 3);
-        for (let i = 0; i < nParts; i++) {
-            reconnectionPositions[i * 3] = bowR * 0.9 + Math.random() * 0.1;
-            reconnectionPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.15;
-            reconnectionPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(reconnectionPositions, 3));
-        reconnectionPts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xff4488, size: 0.008, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
-        layer.add(reconnectionPts);
-    } else { reconnectionPositions = null; reconnectionPts = null; }
-}
-
-function animateReconnection() {
-    if (!reconnectionPositions) return;
-    for (let i = 0; i < reconnectionPositions.length / 3; i++) {
-        const ix = i * 3;
-        const dir = i % 2 === 0 ? 1 : -1;
-        reconnectionPositions[ix] -= 0.003;
-        reconnectionPositions[ix + 1] += dir * 0.004;
-        if (Math.abs(reconnectionPositions[ix + 1]) > 0.5 || reconnectionPositions[ix] < -0.4) {
-            reconnectionPositions[ix] = 0.5 + Math.random() * 0.15;
-            reconnectionPositions[ix + 1] = (Math.random() - 0.5) * 0.1;
-            reconnectionPositions[ix + 2] = (Math.random() - 0.5) * 0.08;
-        }
-    }
-    if (reconnectionPts) reconnectionPts.geometry.attributes.position.needsUpdate = true;
-}
-
-function updateMagnetosphereCompression(bz) {
-    currentBz = bz;
-    const c = bz < 0 ? Math.max(0.4, 1 + bz / 30) : 1.0;
-    if (Math.abs(c - magnetoCompression) > 0.02) { magnetoCompression = c; buildMagnetosphere(); }
-}
-
-function updateStormLevel(kp, dst) {
-    currentKp = kp;
-    currentDst = dst;
-    const kpLevel = Math.max(0, (kp - 3) / 6);
-    const dstLevel = Math.min(1, Math.max(0, Math.abs(dst) / 150));
-    const newLevel = Math.max(kpLevel, dstLevel);
-    if (Math.abs(newLevel - stormLevel) > 0.05) {
-        stormLevel = newLevel;
-        buildMagnetosphere();
-        const si = document.getElementById('storm-indicator');
-        if (si) {
-            si.textContent = stormLevel > 0.7 ? 'EXTREME' : stormLevel > 0.5 ? 'MAJOR' : stormLevel > 0.3 ? 'MODERATE' : stormLevel > 0.1 ? 'MINOR' : 'QUIET';
-            si.style.color = stormLevel > 0.5 ? '#f44' : stormLevel > 0.2 ? '#ff4' : '#4f4';
-        }
-        const al = document.getElementById('aurora-lat');
-        if (al) { al.textContent = Math.round(70 - stormLevel * 12) + '\u00b0'; al.style.color = stormLevel > 0.3 ? '#88ffaa' : '#44ff88'; }
-        const rc = document.getElementById('ring-current-val');
-        if (rc) { rc.textContent = `${dst} nT`; rc.style.color = dst < -100 ? '#f44' : dst < -50 ? '#ffaa44' : '#4f4'; }
-    }
-}
-
-buildMagnetosphere();
-
-// ===== SOLAR WIND PARTICLES (data-driven) =====
-// Three populations: protons (yellow), electrons (cyan), SEP high-energy (red)
-// Density, speed, color, and count respond to live solar monitor data
-const SW_MAX = 800;
-let swParticles = null, swPositions = null, swVelocities = null, swColors = null;
-let swSpeed = 400;        // km/s from live data
-let swDensity = 5;        // /cc from live data
-let swElectronFlux = 100; // pfu from live data
-let swProtonScore = 0;    // 0-1 from detector
-
-function initParticle(i, type) {
-    // type: 0=proton (bulk), 1=electron (fast), 2=SEP (high energy)
-    const ix = i * 3;
-    // Spread across the sun-Earth corridor
-    const spread = type === 2 ? 0.3 : 0.7;
-    swPositions[ix] = 2 + Math.random() * 7;
-    swPositions[ix + 1] = (Math.random() - 0.5) * spread;
-    swPositions[ix + 2] = (Math.random() - 0.5) * spread;
-    // Speed: protons=nominal, electrons=1.5x, SEP=2-3x
-    const baseSpeed = 0.01 + Math.random() * 0.005;
-    const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
-    swVelocities[ix] = -baseSpeed * speedMult;
-    swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
-    swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
-    // Color by type
-    if (type === 2) {
-        // SEP: hot red-pink
-        swColors[ix] = 1.0; swColors[ix + 1] = 0.2; swColors[ix + 2] = 0.15;
-    } else if (type === 1) {
-        // Electron: bright cyan
-        swColors[ix] = 0.3; swColors[ix + 1] = 0.85; swColors[ix + 2] = 1.0;
-    } else {
-        // Proton: bright yellow-white
-        swColors[ix] = 1.0; swColors[ix + 1] = 0.85 + Math.random() * 0.15; swColors[ix + 2] = 0.4 + Math.random() * 0.3;
-    }
-}
-
-function buildSolarWind() {
-    clearLayer('solar-wind');
-    const layer = getLayer('solar-wind');
-    const geo = new THREE.BufferGeometry();
-    swPositions = new Float32Array(SW_MAX * 3);
-    swVelocities = new Float32Array(SW_MAX * 3);
-    swColors = new Float32Array(SW_MAX * 3);
-
-    // Population split based on current data
-    const electronFrac = Math.min(0.4, swElectronFlux / 5000);  // up to 40% at 5000 pfu
-    const sepFrac = Math.min(0.2, swProtonScore * 0.2);          // up to 20% when proton detector fires
-    const protonFrac = 1 - electronFrac - sepFrac;
-
-    // Active particle count: always visible base, scales up with density
-    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));  // 400 base, +50 per /cc
-
-    for (let i = 0; i < SW_MAX; i++) {
-        const t = i / SW_MAX;
-        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
-        initParticle(i, type);
-        // Hide excess particles far away
-        if (i >= activeCount) {
-            swPositions[i * 3] = 99;
-            swPositions[i * 3 + 1] = 99;
-            swPositions[i * 3 + 2] = 99;
-        }
-    }
-
-    geo.setAttribute('position', new THREE.BufferAttribute(swPositions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(swColors, 3));
-    swParticles = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 0.018, vertexColors: true, transparent: true, opacity: 0.85,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-        sizeAttenuation: true,
-    }));
-    layer.add(swParticles);
-}
-
-function animateSolarWind() {
-    if (!swPositions) return;
-    const sf = swSpeed / 400;
-    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));
-    const electronFrac = Math.min(0.4, swElectronFlux / 5000);
-    const sepFrac = Math.min(0.2, swProtonScore * 0.2);
-    const protonFrac = 1 - electronFrac - sepFrac;
-
-    for (let i = 0; i < SW_MAX; i++) {
-        if (i >= activeCount) continue;  // skip hidden particles
-        const ix = i * 3;
-        const t = i / SW_MAX;
-        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
-        const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
-
-        swPositions[ix] += swVelocities[ix] * sf;
-        swPositions[ix + 1] += swVelocities[ix + 1];
-        swPositions[ix + 2] += swVelocities[ix + 2];
-
-        // Deflect around magnetosphere
-        const dist = Math.sqrt(swPositions[ix] ** 2 + swPositions[ix + 1] ** 2 + swPositions[ix + 2] ** 2);
-        const bowDist = BOW_STANDOFF();
-        if (dist < bowDist) {
-            const nx = swPositions[ix] / dist, ny = swPositions[ix + 1] / dist, nz = swPositions[ix + 2] / dist;
-            swVelocities[ix] += nx * 0.003;
-            swVelocities[ix + 1] += ny * 0.003;
-            swVelocities[ix + 2] += nz * 0.003;
-        }
-
-        // Reset when past Earth or too far — respawn from sun side
-        if (swPositions[ix] < -2 || dist > 12) {
-            const spread = type === 2 ? 0.3 : 0.7;
-            swPositions[ix] = 6 + Math.random() * 3;
-            swPositions[ix + 1] = (Math.random() - 0.5) * spread;
-            swPositions[ix + 2] = (Math.random() - 0.5) * spread;
-            const baseSpeed = 0.01 + Math.random() * 0.005;
-            const sm = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
-            swVelocities[ix] = -baseSpeed * sm;
-            swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
-            swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
-        }
-    }
-
-    // Update colors in real-time (population fractions shift with data)
-    if (swParticles) {
-        swParticles.geometry.attributes.position.needsUpdate = true;
-        swParticles.geometry.attributes.color.needsUpdate = true;
-    }
-}
-
-// Update particle properties from live solar monitor feeds
-function updateSolarWindData(feeds) {
-    if (!feeds) return;
-    const sw = feeds.solar_wind_latest || feeds;
-    if (sw.speed != null) swSpeed = sw.speed;
-    if (sw.density != null) swDensity = sw.density;
-    const el = feeds.electron_latest || {};
-    if (el.flux != null) swElectronFlux = el.flux;
-}
-
-buildSolarWind();
-
-// Comet
-const cometGroup = getLayer('comet');
-let cometMesh = null, cometTail = null, cometAngle = 0;
-function buildComet() {
-    clearLayer('comet'); const layer = getLayer('comet');
-    cometMesh = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 12), new THREE.MeshBasicMaterial({ color: 0x88ffff }));
-    layer.add(cometMesh);
-    cometMesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), new THREE.MeshBasicMaterial({ color: 0x44ddff, transparent: true, opacity: 0.2, depthWrite: false })));
-    const tailPts = []; for (let i = 0; i < 60; i++) tailPts.push(new THREE.Vector3(0, 0, 0));
-    cometTail = new THREE.Line(new THREE.BufferGeometry().setFromPoints(tailPts), new THREE.LineBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.4 }));
-    layer.add(cometTail);
-    const ionPts = []; for (let i = 0; i < 40; i++) ionPts.push(new THREE.Vector3(0, 0, 0));
-    const ionTail = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ionPts), new THREE.LineBasicMaterial({ color: 0x4466ff, transparent: true, opacity: 0.25 }));
-    ionTail.name = 'ion-tail'; layer.add(ionTail);
-}
-function animateComet() {
-    if (!cometMesh) return;
-    cometAngle += 0.0008;
-    const orbitR = 3.5 - 1.0 * Math.sin(cometAngle * 0.5);
-    cometMesh.position.set(orbitR * Math.cos(cometAngle) + 4, 0.5 * Math.sin(cometAngle * 0.7), orbitR * Math.sin(cometAngle) * 0.3);
-    const sunDir = new THREE.Vector3(4, 0, 0).sub(cometMesh.position).normalize();
-    const tp = cometTail.geometry.attributes.position;
-    for (let i = 0; i < 60; i++) {
-        const t = i / 60, len = t * 1.5;
-        tp.setXYZ(i, cometMesh.position.x - sunDir.x * len + Math.sin(t * 2) * t * 0.15, cometMesh.position.y - sunDir.y * len + Math.cos(t * 3) * t * 0.08, cometMesh.position.z - sunDir.z * len + t * 0.1);
-    }
-    tp.needsUpdate = true;
-    const ion = cometGroup.getObjectByName('ion-tail');
-    if (ion) { const ip = ion.geometry.attributes.position; for (let i = 0; i < 40; i++) { const t = i / 40, len = t * 2; ip.setXYZ(i, cometMesh.position.x - sunDir.x * len, cometMesh.position.y - sunDir.y * len, cometMesh.position.z - sunDir.z * len); } ip.needsUpdate = true; }
-}
-buildComet();
-
-// ============================================================
-// PHYSICAL SIMULATION LAYERS
-// ============================================================
-
-// --- COSMIC RAY (single particle, data-driven rate) ---
-// One GCR at a time. Rate = measured neutron monitor count rate.
-// During Forbush decrease: rate drops, fewer events.
-let crActive = false;
-let crProgress = 0;
-let crCooldown = 0;
-let crRate = 120; // frames between events (driven by live CR data)
-const crTrailPts = 20;
-const crPositions = new Float32Array(crTrailPts * 3);
-const crGeo = new THREE.BufferGeometry();
-crGeo.setAttribute('position', new THREE.BufferAttribute(crPositions, 3));
-const crLine = new THREE.Line(crGeo, new THREE.LineBasicMaterial({
-    color: 0xaaddff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
-}));
-scene.add(crLine);
-
-// GCR trajectory: isotropic entry, curved by geomagnetic field
-let crEntry = new THREE.Vector3(), crDir = new THREE.Vector3(), crCharge = 1;
-
-function spawnGCR() {
-    // Enter from random direction on a sphere of radius ~5
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    crEntry.set(5 * Math.sin(phi) * Math.cos(theta), 5 * Math.cos(phi), 5 * Math.sin(phi) * Math.sin(theta));
-    // Aim roughly toward Earth with some spread
-    crDir.copy(crEntry).negate().normalize();
-    crDir.x += (Math.random() - 0.5) * 0.4;
-    crDir.y += (Math.random() - 0.5) * 0.4;
-    crDir.z += (Math.random() - 0.5) * 0.4;
-    crDir.normalize();
-    crCharge = Math.random() > 0.5 ? 1 : -1;
-    crProgress = 0;
-    crActive = true;
-    crLine.material.opacity = 0.6;
-}
-
-function animateGCR() {
-    if (!crActive) {
-        crCooldown--;
-        if (crCooldown <= 0) {
-            spawnGCR();
-            crCooldown = crRate;
-        }
-        crLine.material.opacity *= 0.93; // fade out trail
-        crGeo.attributes.position.needsUpdate = true;
-        return;
-    }
-
-    crProgress++;
-    const pos = crEntry.clone().addScaledVector(crDir, crProgress * 0.08);
-
-    // Geomagnetic deflection: Lorentz force F = qv x B
-    // Simplified: deflect perpendicular to both velocity and radial
-    const radial = pos.clone().normalize();
-    const lorentz = new THREE.Vector3().crossVectors(crDir, radial).multiplyScalar(0.003 * crCharge / (pos.length() + 0.5));
-    crDir.add(lorentz).normalize();
-
-    // Update trail (shift positions back, add new head)
-    for (let i = crTrailPts - 1; i > 0; i--) {
-        crPositions[i * 3] = crPositions[(i - 1) * 3];
-        crPositions[i * 3 + 1] = crPositions[(i - 1) * 3 + 1];
-        crPositions[i * 3 + 2] = crPositions[(i - 1) * 3 + 2];
-    }
-    crPositions[0] = pos.x; crPositions[1] = pos.y; crPositions[2] = pos.z;
-    crGeo.attributes.position.needsUpdate = true;
-
-    // Terminate if hits atmosphere or escapes
-    if (pos.length() < R * 1.05) {
-        crActive = false; // absorbed by atmosphere -> shower
-        crLine.material.color.set(0xffffff); // bright flash on impact
-        setTimeout(() => crLine.material.color.set(0xaaddff), 200);
-    }
-    if (pos.length() > 8 || crProgress > 200) {
-        crActive = false; // escaped or deflected away
-    }
-}
-
-// Update CR rate from live data: higher count = more frequent events
-function updateCRRate(crDeviation) {
-    // Baseline: ~one every 2 seconds (120 frames at 60fps)
-    // Forbush decrease (negative deviation): slower rate
-    // Enhanced flux: faster rate
-    crRate = Math.max(30, Math.floor(120 * (1 - crDeviation / 100 * 2)));
-}
-
-// --- IONOSPHERIC SHELL (Schumann cavity + telluric currents) ---
-// At ~100km altitude (R * 1.016), not on the surface
-const IONO_R = R * 1.016; // 100km scale height
-
-// Schumann cavity shell with current-flow shader
-const ionoGeo = new THREE.SphereGeometry(IONO_R, 64, 64);
-const ionoMat = new THREE.ShaderMaterial({
-    uniforms: {
-        uTime: { value: 0 },
-        uStorm: { value: 0 },
-        uSchumannAmp: { value: 0.5 },
-    },
-    vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vPos;
-        varying vec2 vUv;
-        void main() {
-            vNormal = normalize(normalMatrix * normal);
-            vPos = position;
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }`,
-    fragmentShader: `
-        uniform float uTime;
-        uniform float uStorm;
-        uniform float uSchumannAmp;
-        varying vec3 vNormal;
-        varying vec3 vPos;
-        varying vec2 vUv;
-        void main() {
-            // Fresnel edge glow (ionospheric limb)
-            float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 3.0);
-
-            // Telluric current flow: horizontal waves at ionospheric altitude
-            // Two perpendicular current systems (Sq + disturbed)
-            float lat = asin(vPos.y / length(vPos));
-            float lon = atan(vPos.z, vPos.x);
-            float sqCurrent = sin(lat * 6.0 + uTime * 0.5) * cos(lon * 4.0 - uTime * 0.3);
-            float distCurrent = sin(lat * 3.0 - uTime * 1.5) * uStorm;
-
-            // Schumann resonance pulse (7.83 Hz scaled)
-            float schumann = sin(uTime * 0.82) * 0.5 + 0.5; // ~7.8 visual Hz
-            float f2 = sin(uTime * 1.50) * 0.3 + 0.3; // 2nd harmonic ~14.3 Hz
-            float schumannTotal = (schumann + f2 * 0.5) * uSchumannAmp;
-
-            // Combine: edge glow + current pattern + Schumann pulse
-            vec3 quietColor = vec3(0.15, 0.6, 0.4);   // green ionosphere
-            vec3 stormColor = vec3(0.8, 0.3, 0.15);    // orange during storms
-            vec3 baseColor = mix(quietColor, stormColor, uStorm);
-
-            float alpha = fresnel * 0.08
-                        + abs(sqCurrent) * 0.015 * (1.0 + uStorm)
-                        + abs(distCurrent) * 0.03
-                        + schumannTotal * 0.01;
-            alpha = clamp(alpha, 0.0, 0.15);
-
-            gl_FragColor = vec4(baseColor + vec3(schumannTotal * 0.2), alpha);
-        }`,
-    transparent: true, side: THREE.FrontSide, depthWrite: false, blending: THREE.AdditiveBlending,
-});
-const ionoShell = new THREE.Mesh(ionoGeo, ionoMat);
-ionoShell.name = 'ionosphere';
-scene.add(ionoShell);
-// Ionosphere rotates with Earth
-rotatingLayers.add('ionosphere-dummy'); // placeholder so it's tracked
-
-function animateIonosphere(frame) {
-    ionoShell.rotation.y = earth.rotation.y; // sync with Earth
-    ionoMat.uniforms.uTime.value = frame * 0.016;
-    ionoMat.uniforms.uStorm.value = stormLevel;
-}
-
-// --- FIELD-ALIGNED CURRENT DOTS ---
-// Charged particles flowing along field lines (region 1 + region 2 FAC)
-// Rate scales with Kp — more FAC during storms
-const FAC_COUNT = 30;
-const facPositions = new Float32Array(FAC_COUNT * 3);
-const facColors = new Float32Array(FAC_COUNT * 3);
-const facGeo = new THREE.BufferGeometry();
-facGeo.setAttribute('position', new THREE.BufferAttribute(facPositions, 3));
-facGeo.setAttribute('color', new THREE.BufferAttribute(facColors, 3));
-const facPts = new THREE.Points(facGeo, new THREE.PointsMaterial({
-    size: 0.015, vertexColors: true, transparent: true, opacity: 0.8,
-    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
-}));
-scene.add(facPts);
-
-const facState = [];
-for (let i = 0; i < FAC_COUNT; i++) {
-    facState.push({
-        phi: Math.random() * Math.PI * 2,
-        L: 1.8 + Math.floor(Math.random() * 4) * 0.6,
-        theta: Math.random() * Math.PI,
-        speed: 0.015 + Math.random() * 0.025,
-        dir: Math.random() > 0.5 ? 1 : -1,
-        active: Math.random() < 0.3 + stormLevel * 0.5, // more active during storms
-    });
-}
-
-function animateFAC(frame) {
-    const S = 0.5;
-    const activeThreshold = 0.3 + stormLevel * 0.5;
-    for (let i = 0; i < FAC_COUNT; i++) {
-        const f = facState[i];
-        if (!f.active) {
-            // Randomly activate based on storm level
-            if (Math.random() < 0.002 * (1 + stormLevel * 5)) {
-                f.active = true;
-                f.theta = Math.random() * Math.PI;
-                f.phi = Math.random() * Math.PI * 2;
-            }
-            facPositions[i * 3] = 99; facPositions[i * 3 + 1] = 99; facPositions[i * 3 + 2] = 99;
-            continue;
-        }
-
-        f.theta += f.speed * f.dir;
-        if (f.theta > Math.PI || f.theta < 0) {
-            f.dir *= -1;
-            f.theta = Math.max(0.01, Math.min(Math.PI - 0.01, f.theta));
-            if (Math.random() > activeThreshold) f.active = false; // deactivate sometimes
-        }
-
-        const r = f.L * Math.sin(f.theta) * Math.sin(f.theta);
-        let x = r * Math.sin(f.theta) * Math.cos(f.phi);
-        let y = r * Math.cos(f.theta);
-        let z = r * Math.sin(f.theta) * Math.sin(f.phi);
-        if (x > 0) x *= magnetoCompression * 0.7;
-        if (x < 0) x *= 1 + (1 - magnetoCompression) * 0.8;
-
-        const ix = i * 3;
-        facPositions[ix] = x * S;
-        facPositions[ix + 1] = y * S;
-        facPositions[ix + 2] = z * S;
-
-        // Color: cyan flowing toward equator, magenta flowing toward poles
-        const towardEquator = (f.dir > 0 && f.theta < Math.PI / 2) || (f.dir < 0 && f.theta > Math.PI / 2);
-        facColors[ix] = towardEquator ? 0.3 : 0.8;
-        facColors[ix + 1] = towardEquator ? 0.9 : 0.3;
-        facColors[ix + 2] = towardEquator ? 1.0 : 0.9;
-    }
-    facGeo.attributes.position.needsUpdate = true;
-    facGeo.attributes.color.needsUpdate = true;
-}
-
-// ===== ANIMATE =====
-let frame = 0;
-function animate() {
-    requestAnimationFrame(animate);
-    ctrl.update();
-    frame++;
-    const rot = 0.00015;
-    earth.rotation.y += rot; wireframe.rotation.y += rot;
-    for (const name of rotatingLayers) { if (layerGroups[name]) layerGroups[name].rotation.y += rot; }
-
-    // Earthquake wave propagation
-    if (frame % 30 === 0 && eqWaves.length > 0) animateWaves();
-
-    // Subsolar pulse
-    const ss = layerGroups['subsolar']?.getObjectByName('subsolar-pulse');
-    if (ss) ss.scale.setScalar(1 + 0.3 * Math.sin(frame * 0.05));
-
-    // Solar wind particles
-    animateSolarWind();
-
-    // Comet
-    animateComet();
-
-    // Reconnection jets
-    if (currentBz < -3) animateReconnection();
-
-    // Aurora ovals — multi-frequency pulse
-    if (stormLevel > 0.05) {
-        const ml = layerGroups['magnetosphere'];
-        if (ml) ml.children.forEach(c => {
-            if (c.name?.includes('aurora-')) {
-                // Pulse with multiple frequencies (substorm-like)
-                const base = 0.1 + stormLevel * 0.6;
-                const pulse1 = Math.sin(frame * 0.03) * 0.15;       // slow breathing
-                const pulse2 = Math.sin(frame * 0.11) * 0.08;       // faster flicker
-                const pulse3 = Math.sin(frame * 0.31) * 0.04;       // rapid shimmer
-                c.material.opacity = Math.max(0, base + pulse1 + pulse2 + pulse3);
-            }
-        });
-    }
-
-    // Galactic cosmic ray (single, data-driven rate)
-    animateGCR();
-
-    // Ionospheric shell (Schumann + telluric currents)
-    animateIonosphere(frame);
-
-    // Field-aligned currents (Kp-driven)
-    animateFAC(frame);
-
-    // Weather markers (thunder flicker)
-    animateWeather(frame);
-
-    composer.render();
-}
-animate();
-
-// Resize
-window.addEventListener('resize', () => {
-    camera.aspect = box.clientWidth / box.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(box.clientWidth, box.clientHeight);
-    composer.setSize(box.clientWidth, box.clientHeight);
-});
+// Cesium has its own render loop — no animation needed.
+console.log('Global Resonance: CesiumJS globe initialized');

@@ -1,0 +1,19 @@
+{
+  "name": "global-resonance-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cesium": "^1.140.0",
+    "three": "^0.175.0"
+  },
+  "devDependencies": {
+    "vite": "^8.0.5",
+    "vite-plugin-cesium": "^1.2.23"
+  }
+}

@@ -114,11 +114,11 @@ def get_earthquakes(hours: int = 72, min_mag: float = 4.5, limit: int = 500):
             a = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
             ang_dist = math.degrees(2 * math.asin(min(1.0, math.sqrt(a))))
 
-            # Paper XXV 10-zone spatial response (earth_jelly_ball.py)
-            if ang_dist < 15: zone = "eye"              # 0.85x suppression
-            elif ang_dist < 30: zone = "inner"           # 0.92x compression
-            elif ang_dist < 60: zone = "transition"      # 0.98x near-neutral
-            elif ang_dist < 75: zone = "wavefront"       # 1.36x PEAK
+            # Backtested 10-zone spatial response (183K events, 2000-2026)
+            if ang_dist < 15: zone = "eye"              # 1.26x subsolar focusing
+            elif ang_dist < 30: zone = "inner"           # 1.22x enhanced
+            elif ang_dist < 60: zone = "transition"      # 1.07x slightly enhanced
+            elif ang_dist < 75: zone = "wavefront"       # 0.89x suppressed
             elif ang_dist < 100: zone = "wavefront-tail"  # 1.09x enhancement
             elif ang_dist < 120: zone = "neutral"        # 0.95x
             elif ang_dist < 135: zone = "far-suppress"   # 0.82x suppression
@@ -253,18 +253,18 @@ def get_subsolar():
     return {
         **ss,
         "zones": [
-            # Paper XXV spatial response pattern (earth_jelly_ball.py)
-            # Each ring is drawn at its outer radius
-            {"name": "eye",            "radius_deg": 15,  "color": "#4444ff", "ratio": 0.85, "effect": "suppression"},
-            {"name": "inner",          "radius_deg": 30,  "color": "#6666cc", "ratio": 0.92, "effect": "compression"},
-            {"name": "transition",     "radius_deg": 60,  "color": "#44aa44", "ratio": 0.98, "effect": "near-neutral"},
-            {"name": "wavefront",      "radius_deg": 75,  "color": "#ff4444", "ratio": 1.36, "effect": "PEAK enhancement"},
-            {"name": "wavefront-tail", "radius_deg": 100, "color": "#ff8844", "ratio": 1.09, "effect": "enhancement"},
-            {"name": "neutral",        "radius_deg": 120, "color": "#888844", "ratio": 0.95, "effect": "neutral"},
-            {"name": "far-suppress",   "radius_deg": 135, "color": "#446688", "ratio": 0.82, "effect": "suppression"},
-            {"name": "far-neutral",    "radius_deg": 155, "color": "#666666", "ratio": 0.90, "effect": "far neutral"},
-            {"name": "pre-antipodal",  "radius_deg": 165, "color": "#886688", "ratio": 1.00, "effect": "neutral"},
-            {"name": "antipodal",      "radius_deg": 180, "color": "#cc88cc", "ratio": 1.16, "effect": "enhancement"},
+            # Backtested spatial response (183K M4.5+ events, 2000-2026)
+            # Subsolar focusing: earthquakes cluster NEAR subsolar point and at antipode
+            {"name": "eye",            "radius_deg": 15,  "color": "#ff4444", "ratio": 1.26, "effect": "ENHANCED (subsolar focusing)"},
+            {"name": "inner",          "radius_deg": 30,  "color": "#ff6644", "ratio": 1.22, "effect": "enhanced"},
+            {"name": "transition",     "radius_deg": 60,  "color": "#ff8844", "ratio": 1.07, "effect": "slightly enhanced"},
+            {"name": "wavefront",      "radius_deg": 75,  "color": "#446688", "ratio": 0.89, "effect": "suppressed"},
+            {"name": "wavefront-tail", "radius_deg": 100, "color": "#4444aa", "ratio": 0.83, "effect": "SUPPRESSED (minimum)"},
+            {"name": "neutral",        "radius_deg": 120, "color": "#445566", "ratio": 0.90, "effect": "suppressed"},
+            {"name": "far-suppress",   "radius_deg": 135, "color": "#666666", "ratio": 1.04, "effect": "near-neutral"},
+            {"name": "far-neutral",    "radius_deg": 155, "color": "#886688", "ratio": 1.19, "effect": "enhanced"},
+            {"name": "pre-antipodal",  "radius_deg": 165, "color": "#cc88cc", "ratio": 1.29, "effect": "enhanced"},
+            {"name": "antipodal",      "radius_deg": 180, "color": "#ff44ff", "ratio": 1.35, "effect": "ENHANCED (antipodal focusing)"},
         ],
         "terminator_lon": (ss["lon"] + 90) % 360 - 180,
     }
@@ -726,26 +726,67 @@ def get_jellyball_prediction():
         shield = "TRANSITIONAL"
         shield_detail = "Bz near zero: shield state uncertain"
 
-    # === Zone risk modulation ===
-    # When J > J_c: suppression near subsolar, enhancement at wavefront
-    # When J < J_c: normal background rates
-    if above_critical or near_critical:
-        zone_risk = {
-            "eye":            {"factor": 0.85, "risk": "SUPPRESSED"},
-            "inner":          {"factor": 0.92, "risk": "suppressed"},
-            "transition":     {"factor": 0.98, "risk": "near-normal"},
-            "wavefront":      {"factor": 1.36, "risk": "ENHANCED"},
-            "wavefront-tail": {"factor": 1.09, "risk": "enhanced"},
-            "neutral":        {"factor": 0.95, "risk": "normal"},
-            "far-suppress":   {"factor": 0.82, "risk": "SUPPRESSED"},
-            "far-neutral":    {"factor": 0.90, "risk": "slightly suppressed"},
-            "pre-antipodal":  {"factor": 1.00, "risk": "normal"},
-            "antipodal":      {"factor": 1.16, "risk": "enhanced"},
-        }
+    # === Zone risk modulation (backtested from 183K events, 2000-2026) ===
+    # Phase-resolved ratios derived from spatial backtest
+    ZONE_RATIOS_BY_PHASE = {
+        "above_critical": {
+            "eye": 1.742, "inner": 1.567, "transition": 1.187,
+            "wavefront": 0.780, "wavefront-tail": 0.850, "neutral": 0.859,
+            "far-suppress": 1.103, "far-neutral": 0.932,
+            "pre-antipodal": 1.144, "antipodal": 0.926,
+        },
+        "compression": {
+            "eye": 1.624, "inner": 1.339, "transition": 1.096,
+            "wavefront": 0.818, "wavefront-tail": 0.892, "neutral": 0.946,
+            "far-suppress": 0.921, "far-neutral": 1.128,
+            "pre-antipodal": 1.067, "antipodal": 1.139,
+        },
+        "critical_transition": {
+            "eye": 1.789, "inner": 1.137, "transition": 1.385,
+            "wavefront": 0.907, "wavefront-tail": 0.801, "neutral": 0.798,
+            "far-suppress": 0.829, "far-neutral": 0.904,
+            "pre-antipodal": 1.394, "antipodal": 1.707,
+        },
+        "unsettled": {
+            "eye": 1.418, "inner": 1.364, "transition": 1.099,
+            "wavefront": 0.917, "wavefront-tail": 0.809, "neutral": 0.872,
+            "far-suppress": 1.004, "far-neutral": 1.151,
+            "pre-antipodal": 1.315, "antipodal": 1.243,
+        },
+        "quiet": {
+            "eye": 1.209, "inner": 1.181, "transition": 1.064,
+            "wavefront": 0.883, "wavefront-tail": 0.835, "neutral": 0.909,
+            "far-suppress": 1.044, "far-neutral": 1.209,
+            "pre-antipodal": 1.291, "antipodal": 1.378,
+        },
+    }
+
+    # Select phase for zone ratios
+    if above_critical:
+        phase_key = "above_critical"
+    elif near_critical:
+        phase_key = "critical_transition"
+    elif kp >= 5:
+        phase_key = "compression"
+    elif kp >= 3:
+        phase_key = "unsettled"
     else:
-        zone_risk = {z: {"factor": 1.00, "risk": "baseline"} for z in
-            ["eye", "inner", "transition", "wavefront", "wavefront-tail",
-             "neutral", "far-suppress", "far-neutral", "pre-antipodal", "antipodal"]}
+        phase_key = "quiet"
+
+    ratios = ZONE_RATIOS_BY_PHASE[phase_key]
+    zone_risk = {}
+    for z, factor in ratios.items():
+        if factor >= 1.3:
+            risk = "ENHANCED"
+        elif factor >= 1.1:
+            risk = "enhanced"
+        elif factor >= 0.95:
+            risk = "near-normal"
+        elif factor >= 0.85:
+            risk = "suppressed"
+        else:
+            risk = "SUPPRESSED"
+        zone_risk[z] = {"factor": round(factor, 3), "risk": risk}
 
     return {
         "j_current": round(j_current, 4),
