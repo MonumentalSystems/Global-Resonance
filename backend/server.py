@@ -1447,6 +1447,123 @@ def get_pore_pressure():
     }
 
 
+@app.get("/api/magnetic_anomalies")
+def get_magnetic_anomalies():
+    """Major crustal magnetic anomalies from ore deposits and BIFs.
+
+    Each anomaly has: lat, lon, strength_nT, conductivity, area_km2,
+    deposit type, and Schumann interaction regime.
+    """
+    import math
+    PI = math.pi
+    MU0 = 4 * PI * 1e-7
+    deposits = {
+        "Bayan Obo": {
+            "lat": 41.8, "lon": 109.97, "strength_nT": 1500,
+            "conductivity_Sm": 0.1, "area_km2": 48,
+            "type": "REE-Fe carbonatite", "country": "China",
+            "ore_Mt": 1500, "ree_Mt": 48, "magnetite_pct": 35,
+        },
+        "Kiruna": {
+            "lat": 67.86, "lon": 20.22, "strength_nT": 5000,
+            "conductivity_Sm": 1.0, "area_km2": 80,
+            "type": "Apatite iron ore", "country": "Sweden",
+            "ore_Mt": 2500, "ree_Mt": 1.0, "magnetite_pct": 65,
+        },
+        "Kursk Magnetic Anomaly": {
+            "lat": 51.7, "lon": 37.5, "strength_nT": 3000,
+            "conductivity_Sm": 0.5, "area_km2": 120000,
+            "type": "Banded iron formation", "country": "Russia",
+            "ore_Mt": 30000, "ree_Mt": 0, "magnetite_pct": 40,
+        },
+        "Bushveld Complex": {
+            "lat": -25.5, "lon": 29.0, "strength_nT": 1000,
+            "conductivity_Sm": 0.3, "area_km2": 65000,
+            "type": "Layered mafic intrusion", "country": "South Africa",
+            "ore_Mt": 5000, "ree_Mt": 0.1, "magnetite_pct": 25,
+        },
+        "Palabora": {
+            "lat": -23.68, "lon": 31.12, "strength_nT": 800,
+            "conductivity_Sm": 0.08, "area_km2": 20,
+            "type": "Carbonatite complex", "country": "South Africa",
+            "ore_Mt": 400, "ree_Mt": 0.5, "magnetite_pct": 20,
+        },
+        "Lovozero": {
+            "lat": 67.83, "lon": 34.75, "strength_nT": 500,
+            "conductivity_Sm": 0.05, "area_km2": 650,
+            "type": "Alkaline intrusion", "country": "Russia",
+            "ore_Mt": 180, "ree_Mt": 7.0, "magnetite_pct": 12,
+        },
+        "Mountain Pass": {
+            "lat": 35.48, "lon": -115.53, "strength_nT": 200,
+            "conductivity_Sm": 0.01, "area_km2": 3,
+            "type": "Carbonatite REE", "country": "USA",
+            "ore_Mt": 20, "ree_Mt": 2.4, "magnetite_pct": 5,
+        },
+        "Mount Weld": {
+            "lat": -28.77, "lon": 122.55, "strength_nT": 300,
+            "conductivity_Sm": 0.02, "area_km2": 5,
+            "type": "Laterite over carbonatite", "country": "Australia",
+            "ore_Mt": 24, "ree_Mt": 2.5, "magnetite_pct": 8,
+        },
+        "Ilimaussaq": {
+            "lat": 60.95, "lon": -46.0, "strength_nT": 150,
+            "conductivity_Sm": 0.01, "area_km2": 136,
+            "type": "Agpaitic intrusion", "country": "Greenland",
+            "ore_Mt": 60, "ree_Mt": 6.6, "magnetite_pct": 3,
+        },
+        "Carajas": {
+            "lat": -6.07, "lon": -50.17, "strength_nT": 2000,
+            "conductivity_Sm": 0.4, "area_km2": 400,
+            "type": "Iron oxide (BIF)", "country": "Brazil",
+            "ore_Mt": 18000, "ree_Mt": 0, "magnetite_pct": 50,
+        },
+        "Pilbara (Hamersley)": {
+            "lat": -22.3, "lon": 118.3, "strength_nT": 1500,
+            "conductivity_Sm": 0.3, "area_km2": 6000,
+            "type": "Banded iron formation", "country": "Australia",
+            "ore_Mt": 20000, "ree_Mt": 0, "magnetite_pct": 35,
+        },
+        "Labrador Trough": {
+            "lat": 55.0, "lon": -66.5, "strength_nT": 1200,
+            "conductivity_Sm": 0.3, "area_km2": 3000,
+            "type": "BIF iron ore", "country": "Canada",
+            "ore_Mt": 5000, "ree_Mt": 0, "magnetite_pct": 30,
+        },
+    }
+
+    anomalies = []
+    for name, d in deposits.items():
+        sigma = d["conductivity_Sm"]
+        body_km = math.sqrt(d["area_km2"])
+        delta_km = math.sqrt(2 / (2 * PI * 7.83 * MU0 * sigma)) / 1000
+        body_over_delta = body_km / delta_km
+        if body_over_delta > 5:
+            schumann = "scatterer"
+        elif body_over_delta > 1:
+            schumann = "absorber"
+        else:
+            schumann = "transparent"
+
+        anomalies.append({
+            "name": name,
+            "lat": d["lat"], "lon": d["lon"],
+            "strength_nT": d["strength_nT"],
+            "conductivity_Sm": sigma,
+            "area_km2": d["area_km2"],
+            "type": d["type"],
+            "country": d["country"],
+            "ore_Mt": d["ore_Mt"],
+            "ree_Mt": d.get("ree_Mt", 0),
+            "magnetite_pct": d["magnetite_pct"],
+            "skin_depth_7Hz_km": round(delta_km, 2),
+            "body_over_skin": round(body_over_delta, 1),
+            "schumann_regime": schumann,
+        })
+
+    return {"anomalies": sorted(anomalies, key=lambda a: -a["strength_nT"])}
+
+
 @app.get("/api/paleomag")
 def get_paleomag():
     """Bronze Age paleomagnetic field data from pfm9k.2."""

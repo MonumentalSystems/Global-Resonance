@@ -179,6 +179,7 @@ const layerVisible = {
     subsolar: true, terminator: true, plates: true,
     magnetometers: false, weather: true, clouds: true, geojson: false,
     'magnetic-field': true, 'solar-wind': true, telluric: true,
+    'magnetic-anomalies': true,
 };
 
 // --- Live state variables (updated by poll loop) ---
@@ -1021,6 +1022,74 @@ async function updateMagnetometers(data) {
 }
 
 // ============================================================
+// MAGNETIC ANOMALIES (ore deposits, BIFs)
+// ============================================================
+async function updateMagneticAnomalies(data) {
+    const ds = await getDataSource('magnetic-anomalies');
+    ds.entities.removeAll();
+    if (!data?.anomalies) return;
+
+    for (const anom of data.anomalies) {
+        const strength = Math.abs(anom.strength_nT);
+        const maxS = 5000;
+        const norm = Math.min(1, strength / maxS);
+
+        // Radius proportional to sqrt(area) but min 30km for visibility
+        const bodyRadius = Math.max(30000, Math.sqrt(anom.area_km2) * 1000);
+        // Anomaly halo: detectability ring scaled by strength
+        const haloRadius = bodyRadius * (1 + norm * 3);
+
+        // Color by Schumann interaction regime
+        let color;
+        if (anom.schumann_regime === 'scatterer') {
+            color = new Cesium.Color(1.0, 0.27, 1.0, 0.5);  // magenta = scatterer
+        } else if (anom.schumann_regime === 'absorber') {
+            color = new Cesium.Color(1.0, 0.6, 0.27, 0.4);  // orange = absorber
+        } else {
+            color = new Cesium.Color(0.6, 0.6, 1.0, 0.3);   // pale blue = transparent
+        }
+
+        // Outer halo (anomaly extent)
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(anom.lon, anom.lat, 500),
+            ellipsoid: {
+                radii: new Cesium.Cartesian3(haloRadius, haloRadius, 3000),
+                material: color.withAlpha(0.12 + norm * 0.15),
+            },
+            properties: { _type: 'anomaly', ...anom },
+        });
+
+        // Inner core (ore body)
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(anom.lon, anom.lat, 2000),
+            ellipsoid: {
+                radii: new Cesium.Cartesian3(bodyRadius, bodyRadius, 4000),
+                material: color.withAlpha(0.35 + norm * 0.25),
+            },
+            properties: { _type: 'anomaly', ...anom },
+        });
+
+        // Label
+        const labelText = `${anom.name}\n${anom.strength_nT > 0 ? '+' : ''}${anom.strength_nT} nT`;
+        ds.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(anom.lon, anom.lat, 8000),
+            label: {
+                text: labelText,
+                font: '10px monospace',
+                fillColor: color.withAlpha(0.9),
+                outlineColor: Cesium.Color.BLACK.withAlpha(0.6),
+                outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                pixelOffset: new Cesium.Cartesian2(0, -18),
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                scale: 0.85,
+            },
+            properties: { _type: 'anomaly', ...anom },
+        });
+    }
+}
+
+// ============================================================
 // WEATHER MARKERS (precipitation + lightning)
 // ============================================================
 async function renderWeatherMarkers(precipData) {
@@ -1264,6 +1333,7 @@ handler.setInputAction(click => {
         pick.id.properties.propertyNames.forEach(n => { props[n] = pick.id.properties[n]?.getValue(); });
         if (props._type === 'earthquake') { showDetail(props); return; }
         if (props._type === 'magnetometer') { showMagDetail(props); return; }
+        if (props._type === 'anomaly') { showAnomalyDetail(props); return; }
     }
     document.getElementById('detail').style.display = 'none';
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
@@ -1289,6 +1359,26 @@ function showMagDetail(st) {
     content.innerHTML = `<h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
         <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${st.lat?.toFixed(2)}N, ${st.lon?.toFixed(2)}E</span></div>`;
+    panel.style.display = 'block';
+}
+
+function showAnomalyDetail(a) {
+    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
+    const regimeColor = a.schumann_regime === 'scatterer' ? '#ff44ff' : a.schumann_regime === 'absorber' ? '#ffaa44' : '#8888ff';
+    content.innerHTML = `<h3 style="color:${regimeColor}">${a.name}</h3>
+        <div class="row"><span class="k">Type</span><span class="val">${a.type}</span></div>
+        <div class="row"><span class="k">Country</span><span class="val">${a.country}</span></div>
+        <div class="row"><span class="k">Anomaly</span><span class="val" style="color:${regimeColor}">${a.strength_nT > 0 ? '+' : ''}${a.strength_nT} nT</span></div>
+        <div class="row"><span class="k">Conductivity</span><span class="val">${a.conductivity_Sm} S/m</span></div>
+        <div class="row"><span class="k">Area</span><span class="val">${a.area_km2?.toLocaleString()} km&sup2;</span></div>
+        <div class="row"><span class="k">Magnetite</span><span class="val">${a.magnetite_pct}%</span></div>
+        ${a.ore_Mt ? `<div class="row"><span class="k">Ore</span><span class="val">${a.ore_Mt?.toLocaleString()} Mt</span></div>` : ''}
+        ${a.ree_Mt > 0 ? `<div class="row"><span class="k">REE oxide</span><span class="val">${a.ree_Mt} Mt</span></div>` : ''}
+        <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px;">
+            <div class="row"><span class="k">Schumann (7.83 Hz)</span><span class="val" style="color:${regimeColor}">${a.schumann_regime?.toUpperCase()}</span></div>
+            <div class="row"><span class="k">Skin depth</span><span class="val">${a.skin_depth_7Hz_km} km</span></div>
+            <div class="row"><span class="k">Body/skin</span><span class="val">${a.body_over_skin}x</span></div>
+        </div>`;
     panel.style.display = 'block';
 }
 
@@ -1845,6 +1935,7 @@ async function poll() {
         fetchJSON('/lightning'),             // 17
         fetchJSON('/pore_pressure'),         // 18
         fetchJSON('/cloud_charge'),          // 19
+        fetchJSON('/magnetic_anomalies'),    // 20
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -1872,6 +1963,7 @@ async function poll() {
     if (v(17)) updLightning(v(17));
     if (v(18)) updPorePressure(v(18));
     if (v(19)) updCloudCharge(v(19));
+    if (v(20)) updateMagneticAnomalies(v(20));
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;
     updateStormLevel(kpVal, dstVal);
