@@ -45,6 +45,62 @@ def cached_fetch(key, url, ttl=CACHE_TTL):
         return CACHE.get(key, {}).get("data")
 
 
+def fill_vector_grid(u_list, v_list, n_lat, n_lon, passes=6):
+    """Diffuse sparse vector samples into nearby empty cells for visualization."""
+    u_grid = [u_list[i * n_lon:(i + 1) * n_lon] for i in range(n_lat)]
+    v_grid = [v_list[i * n_lon:(i + 1) * n_lon] for i in range(n_lat)]
+
+    for _ in range(passes):
+        changed = False
+        next_u = [row[:] for row in u_grid]
+        next_v = [row[:] for row in v_grid]
+        for i in range(n_lat):
+            for j in range(n_lon):
+                if u_grid[i][j] is not None and v_grid[i][j] is not None:
+                    continue
+
+                neigh_u = []
+                neigh_v = []
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        if di == 0 and dj == 0:
+                            continue
+                        ii = i + di
+                        if ii < 0 or ii >= n_lat:
+                            continue
+                        jj = (j + dj) % n_lon
+                        if u_grid[ii][jj] is None or v_grid[ii][jj] is None:
+                            continue
+                        neigh_u.append(u_grid[ii][jj])
+                        neigh_v.append(v_grid[ii][jj])
+
+                if len(neigh_u) >= 2:
+                    next_u[i][j] = round(sum(neigh_u) / len(neigh_u), 3)
+                    next_v[i][j] = round(sum(neigh_v) / len(neigh_v), 3)
+                    changed = True
+
+        u_grid = next_u
+        v_grid = next_v
+        if not changed:
+            break
+
+    filled_u = []
+    filled_v = []
+    filled_s = []
+    for i in range(n_lat):
+        for j in range(n_lon):
+            u = u_grid[i][j]
+            v = v_grid[i][j]
+            filled_u.append(u)
+            filled_v.append(v)
+            if u is None or v is None:
+                filled_s.append(None)
+            else:
+                filled_s.append(round(math.sqrt(u * u + v * v), 3))
+
+    return filled_u, filled_v, filled_s
+
+
 def subsolar_point(dt=None):
     """Subsolar latitude and longitude."""
     if dt is None:
@@ -1147,11 +1203,9 @@ async def get_wind_field():
     step = 7.5  # degrees
     lats = [round(-82.5 + i * step, 1) for i in range(int(165 / step) + 1)]
     lons = [round(-180 + i * step, 1) for i in range(int(360 / step))]
-    points = [(lat, lon) for lat in lats for lon in lons]
-
-    async def fetch_chunk(client, chunk):
-        lat_list = ",".join(f"{p[0]:.1f}" for p in chunk)
-        lon_list = ",".join(f"{p[1]:.1f}" for p in chunk)
+    async def fetch_lat_row(client, lat):
+        lat_list = ",".join(f"{lat:.1f}" for _ in lons)
+        lon_list = ",".join(f"{lon:.1f}" for lon in lons)
         url = (f"https://api.open-meteo.com/v1/forecast?"
                f"latitude={lat_list}&longitude={lon_list}"
                f"&hourly=windspeed_10m,winddirection_10m"
@@ -1165,10 +1219,7 @@ async def get_wind_field():
     results = {}
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            chunk_size = 60
-            tasks = []
-            for i in range(0, len(points), chunk_size):
-                tasks.append(fetch_chunk(client, points[i:i + chunk_size]))
+            tasks = [fetch_lat_row(client, lat) for lat in lats]
             batches = await asyncio.gather(*tasks, return_exceptions=True)
             for batch in batches:
                 if isinstance(batch, Exception):
@@ -1209,6 +1260,8 @@ async def get_wind_field():
                 v_list.append(val[1])
                 s_list.append(val[2])
 
+    u_list, v_list, s_list = fill_vector_grid(u_list, v_list, len(lats), len(lons))
+
     payload = {
         "source": "Open-Meteo",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1227,7 +1280,7 @@ async def get_wind_field():
 
 
 @app.get("/api/ocean_currents")
-async def get_ocean_currents():
+def get_ocean_currents():
     """
     Global surface ocean currents (geostrophic) from NOAA CoastWatch ERDDAP.
     """
@@ -1243,8 +1296,8 @@ async def get_ocean_currents():
     lon_min, lon_max = -180, 180
 
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
-            das = await client.get(f"{base}.das")
+        with httpx.Client(timeout=25) as client:
+            das = client.get(f"{base}.das")
             if das.status_code == 200:
                 for line in das.text.splitlines():
                     if "time_coverage_end" in line:
@@ -1261,7 +1314,7 @@ async def get_ocean_currents():
                 f"v_current[({time_str})][({lat_min}):{stride}:({lat_max})][({lon_min}):{stride}:({lon_max})]"
             )
             data_url = f"{base}.csv?{query}"
-            resp = await client.get(data_url)
+            resp = client.get(data_url)
             if resp.status_code != 200:
                 return CACHE.get(cache_key, {}).get("data") or {"error": "ocean_current_fetch_failed"}
 
@@ -1282,6 +1335,8 @@ async def get_ocean_currents():
                 u = float(r[3])
                 v = float(r[4])
                 if abs(u) > 1e5 or abs(v) > 1e5:
+                    continue
+                if not math.isfinite(u) or not math.isfinite(v):
                     continue
                 if u == -214748.3648 or v == -214748.3648:
                     continue

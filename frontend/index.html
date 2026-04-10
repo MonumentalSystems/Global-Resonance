@@ -8,6 +8,7 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { background: #030308; color: #ccd; font-family: 'Courier New', monospace; overflow: hidden; }
         #canvas-container { position: absolute; top: 0; left: 0; width: 72vw; height: 100vh; }
+        #canvas-container canvas.cesium-canvas { z-index: 0 !important; }
         #wind-canvas, #ocean-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             z-index: 2; pointer-events: none; mix-blend-mode: screen; opacity: 0.9; }
         #ocean-canvas { z-index: 1; opacity: 0.8; mix-blend-mode: screen; }

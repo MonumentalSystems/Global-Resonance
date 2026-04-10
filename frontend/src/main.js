@@ -1428,6 +1428,90 @@ const windField = {
     },
 };
 
+const WIND_VISUAL_SPEEDUP = 28000;
+const OCEAN_VISUAL_SPEEDUP = 42000;
+
+async function renderWindFieldVectors(grid) {
+    const ds = await getDataSource('wind-field');
+    ds.entities.removeAll();
+    if (!grid?.lats?.length || !grid?.lons?.length) return;
+
+    const renderWindLattice = (latOffsetFrac, lonOffsetFrac, latticeId) => {
+        for (let i = 0; i < grid.nLat; i += 1) {
+            for (let j = 0; j < grid.nLon; j += 1) {
+                const idx = i * grid.nLon + j;
+                const u = grid.u[idx];
+                const v = grid.v[idx];
+                if (u == null || v == null) continue;
+
+                const lat = grid.lats[i];
+                const lon = grid.lons[j];
+                const speed = Math.hypot(u, v);
+                if (speed < 0.6) continue;
+
+                const isAsiaInterior = lon >= 60 && lon <= 140 && lat >= 5 && lat <= 60;
+                const lowSpeedBoost = speed < 5 ? (isAsiaInterior ? 1.45 : 1.18) : 1.0;
+                const latRad = Cesium.Math.toRadians(lat);
+                const color = Cesium.Color.fromCssColorString(windColor(speed)).withAlpha(
+                    Math.min(0.7, (0.18 + speed / 28) * lowSpeedBoost)
+                );
+                const streamlineCount = speed > 8 ? 2 : speed > 5 ? 2 : (isAsiaInterior ? 2 : 1);
+                const vectorScale = (18500 + speed * 1100) * lowSpeedBoost;
+                const baseDLon = (u * vectorScale) / (111320 * Math.max(0.25, Math.cos(latRad)));
+                const baseDLat = (v * vectorScale) / 111320;
+                const basePerpLon = (-v * vectorScale * 0.1) / (111320 * Math.max(0.25, Math.cos(latRad)));
+                const basePerpLat = (u * vectorScale * 0.1) / 111320;
+                const cellLatSpread = Math.max(0.18, grid.dLat * (isAsiaInterior ? 0.28 : 0.34));
+                const cellLonSpread = Math.max(0.18, grid.dLon * (isAsiaInterior ? 0.28 : 0.34));
+
+                for (let k = 0; k < streamlineCount; k++) {
+                    const hashA = Math.sin((i + 1) * 127.1 + (j + 1) * 311.7 + (k + 1) * 74.7 + latticeId * 51.2);
+                    const hashB = Math.sin((i + 1) * 269.5 + (j + 1) * 183.3 + (k + 1) * 246.1 + latticeId * 93.7);
+                    const hashC = Math.sin((i + 1) * 419.2 + (j + 1) * 371.9 + (k + 1) * 11.3 + latticeId * 17.4);
+                    const latJitter = (((hashA + 1) * 0.5 - 0.5) * cellLatSpread) + (grid.dLat * latOffsetFrac);
+                    const lonJitter = (((hashB + 1) * 0.5 - 0.5) * cellLonSpread) + (grid.dLon * lonOffsetFrac);
+                    const offsetScale = ((hashC + 1) * 0.5 - 0.5) * 1.1;
+
+                    const startLat = Math.max(-85, Math.min(85, lat + latJitter + basePerpLat * offsetScale));
+                    let startLon = lon + lonJitter + basePerpLon * offsetScale;
+                    if (startLon > 180) startLon -= 360;
+                    if (startLon < -180) startLon += 360;
+
+                    const wiggle = ((Math.sin((i + 1) * 0.9 + (j + 1) * 1.7 + (k + 1) * 2.3 + latticeId) + 1) * 0.5 - 0.5) * 0.32;
+                    const midLat = Math.max(-85, Math.min(85, startLat + baseDLat * 0.55 + basePerpLat * wiggle));
+                    let midLon = startLon + baseDLon * 0.55 + basePerpLon * wiggle;
+                    if (midLon > 180) midLon -= 360;
+                    if (midLon < -180) midLon += 360;
+
+                    const endLat = Math.max(-85, Math.min(85, startLat + baseDLat));
+                    let endLon = startLon + baseDLon;
+                    if (endLon > 180) endLon -= 360;
+                    if (endLon < -180) endLon += 360;
+
+                    ds.entities.add({
+                        polyline: {
+                            positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                                startLon, startLat, 17000,
+                                midLon, midLat, 22000,
+                                endLon, endLat, 25000,
+                            ]),
+                            width: Math.max(0.85, Math.min(1.8, (0.82 + speed / 22) * (isAsiaInterior ? 1.12 : 1.0))),
+                            material: new PolylineTrailMaterialProperty(
+                                color.withAlpha(Math.max(0.14, color.alpha - Math.abs(offsetScale) * 0.05)),
+                                Math.max(720, 1900 - speed * 65 + k * 110 + latticeId * 90 - (isAsiaInterior ? 120 : 0))
+                            ),
+                        },
+                        properties: { _type: 'wind-field-vector', speed_mps: speed.toFixed(1) },
+                    });
+                }
+            }
+        }
+    };
+
+    renderWindLattice(0.0, 0.0, 0);
+    renderWindLattice(0.35, 0.5, 1);
+}
+
 async function refreshWindField() {
     const data = await fetchJSON('/wind_field');
     if (!data?.grid?.lats || !data?.grid?.lons) return;
@@ -1448,6 +1532,7 @@ async function refreshWindField() {
         maxLon: lons[lons.length - 1],
     };
     windField.setGrid(grid);
+    renderWindFieldVectors(grid);
 }
 
 function stepWindField() {
@@ -1482,8 +1567,8 @@ function stepWindField() {
 
         const speed = Math.hypot(sample.u, sample.v);
         const latRad = Cesium.Math.toRadians(p.lat);
-        const dLat = (sample.v * dt) / 111320;
-        const dLon = (sample.u * dt) / (111320 * Math.max(0.25, Math.cos(latRad)));
+        const dLat = (sample.v * dt * WIND_VISUAL_SPEEDUP) / 111320;
+        const dLon = (sample.u * dt * WIND_VISUAL_SPEEDUP) / (111320 * Math.max(0.25, Math.cos(latRad)));
 
         const prevLat = p.lat;
         const prevLon = p.lon;
@@ -1658,9 +1743,8 @@ function stepOceanField() {
 
         const speed = Math.hypot(sample.u, sample.v);
         const latRad = Cesium.Math.toRadians(p.lat);
-        const scale = 1.8;
-        const dLat = (sample.v * dt * scale) / 111320;
-        const dLon = (sample.u * dt * scale) / (111320 * Math.max(0.25, Math.cos(latRad)));
+        const dLat = (sample.v * dt * OCEAN_VISUAL_SPEEDUP) / 111320;
+        const dLon = (sample.u * dt * OCEAN_VISUAL_SPEEDUP) / (111320 * Math.max(0.25, Math.cos(latRad)));
 
         const prevLat = p.lat;
         const prevLon = p.lon;
