@@ -11,6 +11,80 @@ const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
 const POLL = 30_000;
 
 // ============================================================
+// MATERIALS: ANIMATED FLOW LINES (wind, currents)
+// ============================================================
+const PolylineTrailMaterialProperty = (function () {
+    function PolylineTrailMaterialProperty(color, duration) {
+        this._definitionChanged = new Cesium.Event();
+        this._color = undefined;
+        this._colorSubscription = undefined;
+        this.color = color;
+        this.duration = duration || 2000;
+        this._time = Date.now();
+    }
+
+    Object.defineProperties(PolylineTrailMaterialProperty.prototype, {
+        isConstant: { get: () => false },
+        definitionChanged: { get: function () { return this._definitionChanged; } },
+        color: Cesium.createPropertyDescriptor('color'),
+    });
+
+    PolylineTrailMaterialProperty.prototype.getType = function () {
+        return 'PolylineTrail';
+    };
+
+    PolylineTrailMaterialProperty.prototype.getValue = function (time, result) {
+        if (!Cesium.defined(result)) result = {};
+        result.color = Cesium.Property.getValueOrClonedDefault(
+            this._color, time, Cesium.Color.WHITE, result.color
+        );
+        result.time = ((Date.now() - this._time) % this.duration) / this.duration;
+        return result;
+    };
+
+    PolylineTrailMaterialProperty.prototype.equals = function (other) {
+        return this === other ||
+            (other instanceof PolylineTrailMaterialProperty &&
+                Cesium.Property.equals(this._color, other._color) &&
+                this.duration === other.duration);
+    };
+
+    return PolylineTrailMaterialProperty;
+})();
+
+function ensurePolylineTrailMaterial() {
+    if (Cesium.Material.PolylineTrailType) return;
+    Cesium.Material.PolylineTrailType = 'PolylineTrail';
+    Cesium.Material.PolylineTrailSource = `
+        czm_material czm_getMaterial(czm_materialInput materialInput)
+        {
+            czm_material material = czm_getDefaultMaterial(materialInput);
+            vec2 st = materialInput.st;
+            float t = fract(st.s - time);
+            float head = smoothstep(0.0, 0.15, t);
+            float tail = smoothstep(1.0, 0.85, t);
+            float alpha = head * tail;
+            material.alpha = alpha * color.a;
+            material.diffuse = color.rgb;
+            return material;
+        }
+    `;
+    Cesium.Material._materialCache.addMaterial(Cesium.Material.PolylineTrailType, {
+        fabric: {
+            type: Cesium.Material.PolylineTrailType,
+            uniforms: {
+                color: new Cesium.Color(1, 1, 1, 1),
+                time: 0,
+            },
+            source: Cesium.Material.PolylineTrailSource,
+        },
+        translucent: function () { return true; },
+    });
+}
+
+ensurePolylineTrailMaterial();
+
+// ============================================================
 // CESIUM GLOBE SETUP
 // ============================================================
 const box = document.getElementById('canvas-container');
@@ -177,7 +251,7 @@ function clearThreeLayer(name) {
 const layerVisible = {
     earthquakes: true, 'eq-waves': true, 'jelly-ball': true,
     subsolar: true, terminator: true, plates: true,
-    magnetometers: false, weather: true, clouds: true, geojson: false,
+    magnetometers: false, weather: true, 'wind-field': true, 'ocean-currents': true, clouds: true, geojson: false,
     'magnetic-field': true, 'solar-wind': true, telluric: true,
     'magnetic-anomalies': true,
 };
@@ -206,6 +280,8 @@ function setLayerVisible(name, visible) {
     layerVisible[name] = visible;
     if (dataSources[name]) dataSources[name].show = visible;
     if (threeLayerGroups[name]) threeLayerGroups[name].visible = visible;
+    if (name === 'wind-field') setWindFieldVisible(visible);
+    if (name === 'ocean-currents') setOceanFieldVisible(visible);
 }
 
 // ============================================================
@@ -892,10 +968,10 @@ async function buildTelluricCurrents(fieldData) {
             polyline: {
                 positions: Cesium.Cartesian3.fromDegreesArray(flat),
                 width, clampToGround: true,
-                material: new Cesium.PolylineGlowMaterialProperty({
-                    glowPower: 0.15 + J / 500,
-                    color: color.withAlpha(alpha),
-                }),
+                material: new PolylineTrailMaterialProperty(
+                    color.withAlpha(alpha),
+                    Math.max(900, 3200 - J * 6)
+                ),
             },
             properties: { _type: 'telluric', name: path.name, j_mA_km: J.toFixed(1) },
         });
@@ -1123,6 +1199,11 @@ async function renderWeatherMarkers(precipData) {
             // Lightning bolt as a zigzag polyline
             const baseH = 20000;
             const topH = 50000 + st.thunder_hours * 5000;
+            const phase = Math.random() * Math.PI * 2;
+            const boltColor = new Cesium.CallbackProperty(() => {
+                const pulse = 0.3 + 0.7 * Math.abs(Math.sin(Date.now() / 180 + phase));
+                return Cesium.Color.fromCssColorString('#ffcc44').withAlpha(pulse);
+            }, false);
             ds.entities.add({
                 polyline: {
                     positions: Cesium.Cartesian3.fromDegreesArrayHeights([
@@ -1132,9 +1213,7 @@ async function renderWeatherMarkers(precipData) {
                         st.lon, st.lat, topH,
                     ]),
                     width: 2.5,
-                    material: new Cesium.ColorMaterialProperty(
-                        Cesium.Color.fromCssColorString('#ffcc44').withAlpha(0.8)
-                    ),
+                    material: new Cesium.ColorMaterialProperty(boltColor),
                 },
                 properties: { _type: 'thunder', ...st },
             });
@@ -1146,6 +1225,39 @@ async function renderWeatherMarkers(precipData) {
                     radii: new Cesium.Cartesian3(50000, 50000, 30000),
                     material: Cesium.Color.fromCssColorString('#ffaa22').withAlpha(0.1),
                 },
+            });
+        }
+    }
+
+    // Wind streaks (station-based, animated)
+    for (const st of precipData.stations) {
+        if (st.wind_speed_kmh == null || st.wind_dir_deg == null) continue;
+        const speed = Math.max(0, st.wind_speed_kmh);
+        const dir = (st.wind_dir_deg + 180) % 360; // convert "from" to "to"
+        const dirRad = Cesium.Math.toRadians(dir);
+        const lenKm = Math.max(40, Math.min(220, 40 + speed * 3));
+        const dLat = (lenKm / 111) * Math.cos(dirRad);
+        const dLon = (lenKm / (111 * Math.max(0.2, Math.cos(Cesium.Math.toRadians(st.lat))))) * Math.sin(dirRad);
+        const nStreaks = 6;
+        for (let i = 0; i < nStreaks; i++) {
+            const jitterLon = (Math.random() - 0.5) * 0.8;
+            const jitterLat = (Math.random() - 0.5) * 0.8;
+            const startLon = st.lon + jitterLon;
+            const startLat = st.lat + jitterLat;
+            const endLon = startLon + dLon * 0.35;
+            const endLat = startLat + dLat * 0.35;
+            const alpha = Math.min(0.9, 0.25 + speed / 80);
+            const color = Cesium.Color.fromCssColorString('#66ccff').withAlpha(alpha);
+            ds.entities.add({
+                polyline: {
+                    positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                        startLon, startLat, 12000,
+                        endLon, endLat, 14000,
+                    ]),
+                    width: 2.0,
+                    material: new PolylineTrailMaterialProperty(color, Math.max(900, 2800 - speed * 20)),
+                },
+                properties: { _type: 'wind', ...st },
             });
         }
     }
@@ -1197,6 +1309,391 @@ async function renderCloudLayer(cloudData) {
         }
     }
 }
+
+// ============================================================
+// GLOBAL WIND FIELD (particle flow)
+// ============================================================
+const windCanvas = document.getElementById('wind-canvas');
+const windCtx = windCanvas?.getContext('2d');
+const oceanCanvas = document.getElementById('ocean-canvas');
+const oceanCtx = oceanCanvas?.getContext('2d');
+let windFieldVisible = true;
+
+function setWindFieldVisible(visible) {
+    windFieldVisible = visible;
+    if (windCanvas) windCanvas.style.display = visible ? 'block' : 'none';
+}
+
+let oceanFieldVisible = true;
+
+function setOceanFieldVisible(visible) {
+    oceanFieldVisible = visible;
+    if (oceanCanvas) oceanCanvas.style.display = visible ? 'block' : 'none';
+}
+
+function resizeOverlayCanvas(canvas, ctx) {
+    if (!canvas || !ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(canvas.clientWidth * dpr);
+    canvas.height = Math.floor(canvas.clientHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resizeWindCanvas);
+function resizeWindCanvas() {
+    resizeOverlayCanvas(windCanvas, windCtx);
+    resizeOverlayCanvas(oceanCanvas, oceanCtx);
+}
+resizeWindCanvas();
+
+const windColorStops = [
+    { s: 0, c: [90, 160, 255] },
+    { s: 5, c: [70, 210, 200] },
+    { s: 10, c: [120, 255, 140] },
+    { s: 15, c: [255, 225, 90] },
+    { s: 20, c: [255, 140, 70] },
+    { s: 30, c: [255, 60, 60] },
+];
+
+function windColor(speed) {
+    const s = Math.max(0, Math.min(30, speed || 0));
+    for (let i = 0; i < windColorStops.length - 1; i++) {
+        const a = windColorStops[i], b = windColorStops[i + 1];
+        if (s >= a.s && s <= b.s) {
+            const t = (s - a.s) / (b.s - a.s || 1);
+            const r = Math.round(a.c[0] + (b.c[0] - a.c[0]) * t);
+            const g = Math.round(a.c[1] + (b.c[1] - a.c[1]) * t);
+            const bch = Math.round(a.c[2] + (b.c[2] - a.c[2]) * t);
+            return `rgb(${r},${g},${bch})`;
+        }
+    }
+    return 'rgb(255,60,60)';
+}
+
+const windField = {
+    grid: null,
+    particles: [],
+    lastFrame: performance.now(),
+    maxAge: 70,
+    seedCount: 1200,
+    setGrid(grid) {
+        this.grid = grid;
+        this.resetParticles();
+    },
+    resetParticles() {
+        if (!this.grid) return;
+        const w = windCanvas?.clientWidth || 800;
+        const h = windCanvas?.clientHeight || 600;
+        this.seedCount = Math.max(800, Math.min(1800, Math.floor((w * h) / 1200)));
+        this.particles = [];
+        for (let i = 0; i < this.seedCount; i++) this.particles.push(this.randomParticle());
+    },
+    randomParticle() {
+        const g = this.grid;
+        const lat = g.minLat + Math.random() * (g.maxLat - g.minLat);
+        const lon = g.minLon + Math.random() * (g.maxLon - g.minLon);
+        return { lat, lon, age: Math.random() * this.maxAge };
+    },
+    sample(lat, lon) {
+        const g = this.grid;
+        if (!g) return null;
+        if (lat < g.minLat || lat > g.maxLat) return null;
+        let lonWrap = lon;
+        while (lonWrap < g.minLon) lonWrap += 360;
+        while (lonWrap > g.maxLon) lonWrap -= 360;
+
+        const i = (lat - g.minLat) / g.dLat;
+        const j = (lonWrap - g.minLon) / g.dLon;
+        const i0 = Math.floor(i);
+        let j0 = Math.floor(j);
+        const i1 = Math.min(g.nLat - 1, i0 + 1);
+        let j1 = j0 + 1;
+        if (j1 >= g.nLon) j1 = 0;
+        if (i0 < 0 || i1 >= g.nLat) return null;
+
+        const fi = i - i0;
+        const fj = j - j0;
+
+        const idx = (ii, jj) => ii * g.nLon + jj;
+        const u00 = g.u[idx(i0, j0)], v00 = g.v[idx(i0, j0)];
+        const u10 = g.u[idx(i1, j0)], v10 = g.v[idx(i1, j0)];
+        const u01 = g.u[idx(i0, j1)], v01 = g.v[idx(i0, j1)];
+        const u11 = g.u[idx(i1, j1)], v11 = g.v[idx(i1, j1)];
+        if ([u00, v00, u10, v10, u01, v01, u11, v11].some(x => x == null)) return null;
+
+        const u0 = u00 * (1 - fi) + u10 * fi;
+        const u1 = u01 * (1 - fi) + u11 * fi;
+        const v0 = v00 * (1 - fi) + v10 * fi;
+        const v1 = v01 * (1 - fi) + v11 * fi;
+        return { u: u0 * (1 - fj) + u1 * fj, v: v0 * (1 - fj) + v1 * fj };
+    },
+};
+
+async function refreshWindField() {
+    const data = await fetchJSON('/wind_field');
+    if (!data?.grid?.lats || !data?.grid?.lons) return;
+    const lats = data.grid.lats;
+    const lons = data.grid.lons;
+    const grid = {
+        lats,
+        lons,
+        u: data.grid.u,
+        v: data.grid.v,
+        nLat: lats.length,
+        nLon: lons.length,
+        dLat: lats.length > 1 ? (lats[1] - lats[0]) : 1,
+        dLon: lons.length > 1 ? (lons[1] - lons[0]) : 1,
+        minLat: lats[0],
+        maxLat: lats[lats.length - 1],
+        minLon: lons[0],
+        maxLon: lons[lons.length - 1],
+    };
+    windField.setGrid(grid);
+}
+
+function stepWindField() {
+    if (!windCanvas || !windCtx || !windField.grid || !windFieldVisible) {
+        requestAnimationFrame(stepWindField);
+        return;
+    }
+
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.012, (now - windField.lastFrame) / 1000));
+    windField.lastFrame = now;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = windCanvas.width / dpr;
+    const h = windCanvas.height / dpr;
+
+    windCtx.fillStyle = 'rgba(3,3,8,0.08)';
+    windCtx.fillRect(0, 0, w, h);
+    windCtx.globalCompositeOperation = 'lighter';
+    windCtx.lineWidth = 1.1;
+
+    for (let p of windField.particles) {
+        if (p.age++ > windField.maxAge) {
+            Object.assign(p, windField.randomParticle());
+            continue;
+        }
+        const sample = windField.sample(p.lat, p.lon);
+        if (!sample) {
+            Object.assign(p, windField.randomParticle());
+            continue;
+        }
+
+        const speed = Math.hypot(sample.u, sample.v);
+        const latRad = Cesium.Math.toRadians(p.lat);
+        const dLat = (sample.v * dt) / 111320;
+        const dLon = (sample.u * dt) / (111320 * Math.max(0.25, Math.cos(latRad)));
+
+        const prevLat = p.lat;
+        const prevLon = p.lon;
+        p.lat += dLat;
+        p.lon += dLon;
+        if (p.lon > 180) p.lon -= 360;
+        if (p.lon < -180) p.lon += 360;
+        if (p.lat > windField.grid.maxLat || p.lat < windField.grid.minLat) {
+            Object.assign(p, windField.randomParticle());
+            continue;
+        }
+
+        const prevCart = Cesium.Cartesian3.fromDegrees(prevLon, prevLat, 12000);
+        const nextCart = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 12000);
+        const prevPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, prevCart);
+        const nextPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, nextCart);
+        if (!prevPos || !nextPos) continue;
+        if (nextPos.x < 0 || nextPos.y < 0 || nextPos.x > w || nextPos.y > h) continue;
+
+        windCtx.strokeStyle = windColor(speed);
+        windCtx.beginPath();
+        windCtx.moveTo(prevPos.x, prevPos.y);
+        windCtx.lineTo(nextPos.x, nextPos.y);
+        windCtx.stroke();
+    }
+
+    windCtx.globalCompositeOperation = 'source-over';
+    requestAnimationFrame(stepWindField);
+}
+
+refreshWindField();
+setInterval(refreshWindField, 15 * 60 * 1000);
+stepWindField();
+
+// ============================================================
+// OCEAN CURRENTS FIELD (particle flow)
+// ============================================================
+const oceanColorStops = [
+    { s: 0, c: [70, 120, 200] },
+    { s: 0.3, c: [60, 170, 210] },
+    { s: 0.6, c: [80, 210, 200] },
+    { s: 1.0, c: [120, 240, 180] },
+    { s: 1.5, c: [255, 210, 120] },
+    { s: 2.0, c: [255, 140, 90] },
+];
+
+function oceanColor(speed) {
+    const s = Math.max(0, Math.min(2.5, speed || 0));
+    for (let i = 0; i < oceanColorStops.length - 1; i++) {
+        const a = oceanColorStops[i], b = oceanColorStops[i + 1];
+        if (s >= a.s && s <= b.s) {
+            const t = (s - a.s) / (b.s - a.s || 1);
+            const r = Math.round(a.c[0] + (b.c[0] - a.c[0]) * t);
+            const g = Math.round(a.c[1] + (b.c[1] - a.c[1]) * t);
+            const bch = Math.round(a.c[2] + (b.c[2] - a.c[2]) * t);
+            return `rgb(${r},${g},${bch})`;
+        }
+    }
+    return 'rgb(255,140,90)';
+}
+
+const oceanField = {
+    grid: null,
+    particles: [],
+    lastFrame: performance.now(),
+    maxAge: 90,
+    seedCount: 900,
+    setGrid(grid) {
+        this.grid = grid;
+        this.resetParticles();
+    },
+    resetParticles() {
+        if (!this.grid) return;
+        const w = oceanCanvas?.clientWidth || 800;
+        const h = oceanCanvas?.clientHeight || 600;
+        this.seedCount = Math.max(600, Math.min(1400, Math.floor((w * h) / 1400)));
+        this.particles = [];
+        for (let i = 0; i < this.seedCount; i++) this.particles.push(this.randomParticle());
+    },
+    randomParticle() {
+        const g = this.grid;
+        const lat = g.minLat + Math.random() * (g.maxLat - g.minLat);
+        const lon = g.minLon + Math.random() * (g.maxLon - g.minLon);
+        return { lat, lon, age: Math.random() * this.maxAge };
+    },
+    sample(lat, lon) {
+        const g = this.grid;
+        if (!g) return null;
+        if (lat < g.minLat || lat > g.maxLat) return null;
+        let lonWrap = lon;
+        while (lonWrap < g.minLon) lonWrap += 360;
+        while (lonWrap > g.maxLon) lonWrap -= 360;
+
+        const i = (lat - g.minLat) / g.dLat;
+        const j = (lonWrap - g.minLon) / g.dLon;
+        const i0 = Math.floor(i);
+        let j0 = Math.floor(j);
+        const i1 = Math.min(g.nLat - 1, i0 + 1);
+        let j1 = j0 + 1;
+        if (j1 >= g.nLon) j1 = 0;
+        if (i0 < 0 || i1 >= g.nLat) return null;
+
+        const fi = i - i0;
+        const fj = j - j0;
+
+        const idx = (ii, jj) => ii * g.nLon + jj;
+        const u00 = g.u[idx(i0, j0)], v00 = g.v[idx(i0, j0)];
+        const u10 = g.u[idx(i1, j0)], v10 = g.v[idx(i1, j0)];
+        const u01 = g.u[idx(i0, j1)], v01 = g.v[idx(i0, j1)];
+        const u11 = g.u[idx(i1, j1)], v11 = g.v[idx(i1, j1)];
+        if ([u00, v00, u10, v10, u01, v01, u11, v11].some(x => x == null)) return null;
+
+        const u0 = u00 * (1 - fi) + u10 * fi;
+        const u1 = u01 * (1 - fi) + u11 * fi;
+        const v0 = v00 * (1 - fi) + v10 * fi;
+        const v1 = v01 * (1 - fi) + v11 * fi;
+        return { u: u0 * (1 - fj) + u1 * fj, v: v0 * (1 - fj) + v1 * fj };
+    },
+};
+
+async function refreshOceanField() {
+    const data = await fetchJSON('/ocean_currents');
+    if (!data?.grid?.lats || !data?.grid?.lons) return;
+    const lats = data.grid.lats;
+    const lons = data.grid.lons;
+    const grid = {
+        lats,
+        lons,
+        u: data.grid.u,
+        v: data.grid.v,
+        nLat: lats.length,
+        nLon: lons.length,
+        dLat: lats.length > 1 ? (lats[1] - lats[0]) : 1,
+        dLon: lons.length > 1 ? (lons[1] - lons[0]) : 1,
+        minLat: lats[0],
+        maxLat: lats[lats.length - 1],
+        minLon: lons[0],
+        maxLon: lons[lons.length - 1],
+    };
+    oceanField.setGrid(grid);
+}
+
+function stepOceanField() {
+    if (!oceanCanvas || !oceanCtx || !oceanField.grid || !oceanFieldVisible) {
+        requestAnimationFrame(stepOceanField);
+        return;
+    }
+
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.012, (now - oceanField.lastFrame) / 1000));
+    oceanField.lastFrame = now;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = oceanCanvas.width / dpr;
+    const h = oceanCanvas.height / dpr;
+
+    oceanCtx.fillStyle = 'rgba(2,4,10,0.08)';
+    oceanCtx.fillRect(0, 0, w, h);
+    oceanCtx.globalCompositeOperation = 'lighter';
+    oceanCtx.lineWidth = 1.0;
+
+    for (let p of oceanField.particles) {
+        if (p.age++ > oceanField.maxAge) {
+            Object.assign(p, oceanField.randomParticle());
+            continue;
+        }
+        const sample = oceanField.sample(p.lat, p.lon);
+        if (!sample) {
+            Object.assign(p, oceanField.randomParticle());
+            continue;
+        }
+
+        const speed = Math.hypot(sample.u, sample.v);
+        const latRad = Cesium.Math.toRadians(p.lat);
+        const scale = 1.8;
+        const dLat = (sample.v * dt * scale) / 111320;
+        const dLon = (sample.u * dt * scale) / (111320 * Math.max(0.25, Math.cos(latRad)));
+
+        const prevLat = p.lat;
+        const prevLon = p.lon;
+        p.lat += dLat;
+        p.lon += dLon;
+        if (p.lon > 180) p.lon -= 360;
+        if (p.lon < -180) p.lon += 360;
+        if (p.lat > oceanField.grid.maxLat || p.lat < oceanField.grid.minLat) {
+            Object.assign(p, oceanField.randomParticle());
+            continue;
+        }
+
+        const prevCart = Cesium.Cartesian3.fromDegrees(prevLon, prevLat, 7000);
+        const nextCart = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 7000);
+        const prevPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, prevCart);
+        const nextPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, nextCart);
+        if (!prevPos || !nextPos) continue;
+        if (nextPos.x < 0 || nextPos.y < 0 || nextPos.x > w || nextPos.y > h) continue;
+
+        oceanCtx.strokeStyle = oceanColor(speed);
+        oceanCtx.beginPath();
+        oceanCtx.moveTo(prevPos.x, prevPos.y);
+        oceanCtx.lineTo(nextPos.x, nextPos.y);
+        oceanCtx.stroke();
+    }
+
+    oceanCtx.globalCompositeOperation = 'source-over';
+    requestAnimationFrame(stepOceanField);
+}
+
+refreshOceanField();
+setInterval(refreshOceanField, 6 * 60 * 60 * 1000);
+stepOceanField();
 
 // ============================================================
 // GEOJSON / KML LOADER

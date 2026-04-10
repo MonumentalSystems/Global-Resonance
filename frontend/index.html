@@ -8,6 +8,9 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { background: #030308; color: #ccd; font-family: 'Courier New', monospace; overflow: hidden; }
         #canvas-container { position: absolute; top: 0; left: 0; width: 72vw; height: 100vh; }
+        #wind-canvas, #ocean-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 2; pointer-events: none; mix-blend-mode: screen; opacity: 0.9; }
+        #ocean-canvas { z-index: 1; opacity: 0.8; mix-blend-mode: screen; }
         #sidebar { position: absolute; top: 0; right: 0; width: 28vw; height: 100vh;
             background: rgba(4,4,14,0.95); border-left: 1px solid rgba(0,204,255,0.15);
             overflow-y: auto; padding: 8px 8px 40px; font-size: 11px;
@@ -163,7 +166,10 @@
     </style>
 </head>
 <body>
-    <div id="canvas-container"></div>
+    <div id="canvas-container">
+        <canvas id="ocean-canvas"></canvas>
+        <canvas id="wind-canvas"></canvas>
+    </div>
     <div id="header"><h1>GLOBAL RESONANCE</h1><div class="sub" id="clock"></div></div>
     <div id="alert-banner"></div>
 
@@ -312,6 +318,8 @@
                 <label class="lt"><input type="checkbox" checked data-layer="plates"><span class="dot" style="background:#446"></span>Plate Boundaries</label>
                 <label class="lt"><input type="checkbox" data-layer="magnetometers"><span class="dot" style="background:#c4c"></span>Magnetometers</label>
                 <label class="lt"><input type="checkbox" checked data-layer="weather"><span class="dot" style="background:#fc4"></span>Precip + Lightning</label>
+                <label class="lt"><input type="checkbox" checked data-layer="wind-field"><span class="dot" style="background:#6cf"></span>Global Wind Field</label>
+                <label class="lt"><input type="checkbox" checked data-layer="ocean-currents"><span class="dot" style="background:#6af"></span>Ocean Currents</label>
                 <label class="lt"><input type="checkbox" checked data-layer="clouds"><span class="dot" style="background:#8af"></span>Cloud Charge</label>
                 <label class="lt"><input type="checkbox" checked data-layer="magnetic-anomalies"><span class="dot" style="background:#f4f"></span>Magnetic Anomalies</label>
                 <label class="lt"><input type="checkbox" data-layer="geojson"><span class="dot" style="background:#4cc"></span>Custom Layers</label>

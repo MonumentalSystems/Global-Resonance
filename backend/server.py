@@ -1089,7 +1089,7 @@ async def get_precipitation():
                 try:
                     url = (f"https://api.open-meteo.com/v1/forecast?"
                            f"latitude={st['lat']}&longitude={st['lon']}"
-                           f"&hourly=precipitation,weathercode"
+                           f"&hourly=precipitation,weathercode,windspeed_10m,winddirection_10m"
                            f"&past_days=3&forecast_days=0")
                     resp = await client.get(url)
                     if resp.status_code == 200:
@@ -1097,8 +1097,12 @@ async def get_precipitation():
                         hourly = d.get("hourly", {})
                         precip = hourly.get("precipitation", [])
                         codes = hourly.get("weathercode", [])
+                        wind_speeds = hourly.get("windspeed_10m", [])
+                        wind_dirs = hourly.get("winddirection_10m", [])
                         total_72h = sum(p for p in precip if p) if precip else 0
                         current = precip[-1] if precip else 0
+                        wind_speed = wind_speeds[-1] if wind_speeds else 0
+                        wind_dir = wind_dirs[-1] if wind_dirs else 0
                         # Thunderstorm detection: WMO codes 95-99
                         thunder_hours = sum(1 for c in codes if c and c >= 95)
                         entry = {
@@ -1107,6 +1111,8 @@ async def get_precipitation():
                             "current_mm": current,
                             "thunder_hours": thunder_hours,
                             "n_hours": len(precip),
+                            "wind_speed_kmh": round(wind_speed, 1) if wind_speed is not None else None,
+                            "wind_dir_deg": round(wind_dir, 0) if wind_dir is not None else None,
                         }
                         results.append(entry)
                         CACHE[cache_key] = {"data": entry, "ts": time.time()}
@@ -1125,6 +1131,195 @@ async def get_precipitation():
         "global_thunder_hours": thunder_total,
         "n_stations": len(results),
     }
+
+
+@app.get("/api/wind_field")
+async def get_wind_field():
+    """
+    Global wind field from Open-Meteo (batch multi-point requests).
+
+    Returns coarse global grid of 10m wind (u,v) for animation.
+    """
+    cache_key = "wind_field"
+    if cache_key in CACHE and time.time() - CACHE[cache_key]["ts"] < 1200:
+        return CACHE[cache_key]["data"]
+
+    step = 7.5  # degrees
+    lats = [round(-82.5 + i * step, 1) for i in range(int(165 / step) + 1)]
+    lons = [round(-180 + i * step, 1) for i in range(int(360 / step))]
+    points = [(lat, lon) for lat in lats for lon in lons]
+
+    async def fetch_chunk(client, chunk):
+        lat_list = ",".join(f"{p[0]:.1f}" for p in chunk)
+        lon_list = ",".join(f"{p[1]:.1f}" for p in chunk)
+        url = (f"https://api.open-meteo.com/v1/forecast?"
+               f"latitude={lat_list}&longitude={lon_list}"
+               f"&hourly=windspeed_10m,winddirection_10m"
+               f"&past_days=0&forecast_days=1")
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else [data]
+
+    results = {}
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            chunk_size = 60
+            tasks = []
+            for i in range(0, len(points), chunk_size):
+                tasks.append(fetch_chunk(client, points[i:i + chunk_size]))
+            batches = await asyncio.gather(*tasks, return_exceptions=True)
+            for batch in batches:
+                if isinstance(batch, Exception):
+                    continue
+                for item in batch:
+                    lat = round(float(item.get("latitude")), 1)
+                    lon = round(float(item.get("longitude")), 1)
+                    hourly = item.get("hourly", {})
+                    speeds = hourly.get("windspeed_10m", [])
+                    dirs = hourly.get("winddirection_10m", [])
+                    if not speeds or not dirs:
+                        continue
+                    speed_kmh = speeds[-1]
+                    dir_from = dirs[-1]
+                    if speed_kmh is None or dir_from is None:
+                        continue
+                    speed_mps = speed_kmh / 3.6
+                    dir_to = (dir_from + 180) % 360
+                    rad = math.radians(dir_to)
+                    u = speed_mps * math.sin(rad)
+                    v = speed_mps * math.cos(rad)
+                    results[(lat, lon)] = (round(u, 3), round(v, 3), round(speed_mps, 3))
+    except Exception:
+        pass
+
+    u_list = []
+    v_list = []
+    s_list = []
+    for lat in lats:
+        for lon in lons:
+            val = results.get((lat, lon))
+            if not val:
+                u_list.append(None)
+                v_list.append(None)
+                s_list.append(None)
+            else:
+                u_list.append(val[0])
+                v_list.append(val[1])
+                s_list.append(val[2])
+
+    payload = {
+        "source": "Open-Meteo",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "grid": {
+            "resolution_deg": step,
+            "lats": lats,
+            "lons": lons,
+            "u": u_list,
+            "v": v_list,
+            "speed": s_list,
+            "units": {"u": "m/s", "v": "m/s", "speed": "m/s"},
+        },
+    }
+    CACHE[cache_key] = {"data": payload, "ts": time.time()}
+    return payload
+
+
+@app.get("/api/ocean_currents")
+async def get_ocean_currents():
+    """
+    Global surface ocean currents (geostrophic) from NOAA CoastWatch ERDDAP.
+    """
+    cache_key = "ocean_currents"
+    if cache_key in CACHE and time.time() - CACHE[cache_key]["ts"] < 6 * 3600:
+        return CACHE[cache_key]["data"]
+
+    base = "https://coastwatch.noaa.gov/erddap/griddap/noaacwBLENDEDNRTcurrentsDaily"
+    time_str = None
+    step = 5.0
+    stride = int(step / 0.25)
+    lat_min, lat_max = -80, 80
+    lon_min, lon_max = -180, 180
+
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            das = await client.get(f"{base}.das")
+            if das.status_code == 200:
+                for line in das.text.splitlines():
+                    if "time_coverage_end" in line:
+                        parts = line.split('"')
+                        if len(parts) >= 2:
+                            time_str = parts[1].strip()
+                            break
+
+            if not time_str:
+                time_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+
+            query = (
+                f"u_current[({time_str})][({lat_min}):{stride}:({lat_max})][({lon_min}):{stride}:({lon_max})],"
+                f"v_current[({time_str})][({lat_min}):{stride}:({lat_max})][({lon_min}):{stride}:({lon_max})]"
+            )
+            data_url = f"{base}.csv?{query}"
+            resp = await client.get(data_url)
+            if resp.status_code != 200:
+                return CACHE.get(cache_key, {}).get("data") or {"error": "ocean_current_fetch_failed"}
+
+            rows = resp.text.splitlines()
+            if len(rows) < 3:
+                return CACHE.get(cache_key, {}).get("data") or {"error": "ocean_current_empty"}
+
+            import csv
+            reader = csv.reader(rows[2:])
+            results = {}
+            lats_set = set()
+            lons_set = set()
+            for r in reader:
+                if len(r) < 5:
+                    continue
+                lat = round(float(r[1]), 3)
+                lon = round(float(r[2]), 3)
+                u = float(r[3])
+                v = float(r[4])
+                if abs(u) > 1e5 or abs(v) > 1e5:
+                    continue
+                if u == -214748.3648 or v == -214748.3648:
+                    continue
+                results[(lat, lon)] = (round(u, 3), round(v, 3))
+                lats_set.add(lat)
+                lons_set.add(lon)
+
+            lats = sorted(lats_set)
+            lons = sorted(lons_set)
+            u_list = []
+            v_list = []
+            for lat in lats:
+                for lon in lons:
+                    val = results.get((lat, lon))
+                    if not val:
+                        u_list.append(None)
+                        v_list.append(None)
+                    else:
+                        u_list.append(val[0])
+                        v_list.append(val[1])
+
+            payload = {
+                "source": "NOAA CoastWatch ERDDAP (noaacwBLENDEDNRTcurrentsDaily)",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "time": time_str,
+                "grid": {
+                    "resolution_deg": step,
+                    "lats": lats,
+                    "lons": lons,
+                    "u": u_list,
+                    "v": v_list,
+                    "units": {"u": "m/s", "v": "m/s"},
+                },
+            }
+            CACHE[cache_key] = {"data": payload, "ts": time.time()}
+            return payload
+    except Exception:
+        return CACHE.get(cache_key, {}).get("data") or {"error": "ocean_current_exception"}
 
 
 @app.get("/api/lightning")
