@@ -1431,6 +1431,16 @@ const windField = {
 const WIND_VISUAL_SPEEDUP = 28000;
 const OCEAN_VISUAL_SPEEDUP = 42000;
 
+function isLikelyLandRegion(lat, lon) {
+    return (
+        (lon >= -170 && lon <= -50 && lat >= 10 && lat <= 75) ||   // North America
+        (lon >= -85 && lon <= -35 && lat >= -55 && lat <= 15) ||   // South America
+        (lon >= -20 && lon <= 55 && lat >= -35 && lat <= 70) ||    // Africa + Europe
+        (lon >= 55 && lon <= 150 && lat >= 5 && lat <= 70) ||      // Asia
+        (lon >= 110 && lon <= 155 && lat >= -45 && lat <= -10)     // Australia
+    );
+}
+
 async function renderWindFieldVectors(grid) {
     const ds = await getDataSource('wind-field');
     ds.entities.removeAll();
@@ -1449,12 +1459,19 @@ async function renderWindFieldVectors(grid) {
                 const speed = Math.hypot(u, v);
                 if (speed < 0.6) continue;
 
+                const isLikelyLand = isLikelyLandRegion(lat, lon);
                 const isAsiaInterior = lon >= 60 && lon <= 140 && lat >= 5 && lat <= 60;
-                const lowSpeedBoost = speed < 5 ? (isAsiaInterior ? 1.45 : 1.18) : 1.0;
+                const lowSpeedBoost = speed < 5
+                    ? (isAsiaInterior ? 1.45 : isLikelyLand ? 1.32 : 1.18)
+                    : (isLikelyLand ? 1.08 : 1.0);
                 const latRad = Cesium.Math.toRadians(lat);
-                const color = Cesium.Color.fromCssColorString(windColor(speed)).withAlpha(
-                    Math.min(0.7, (0.18 + speed / 28) * lowSpeedBoost)
-                );
+                const baseColor = Cesium.Color.fromCssColorString(windColor(speed));
+                const color = Cesium.Color.lerp(
+                    baseColor,
+                    Cesium.Color.WHITE,
+                    isLikelyLand ? 0.35 : 0.08,
+                    new Cesium.Color()
+                ).withAlpha(Math.min(0.78, (0.18 + speed / 28) * lowSpeedBoost));
                 const streamlineCount = speed > 8 ? 2 : speed > 5 ? 2 : (isAsiaInterior ? 2 : 1);
                 const vectorScale = (18500 + speed * 1100) * lowSpeedBoost;
                 const baseDLon = (u * vectorScale) / (111320 * Math.max(0.25, Math.cos(latRad)));
@@ -1491,11 +1508,11 @@ async function renderWindFieldVectors(grid) {
                     ds.entities.add({
                         polyline: {
                             positions: Cesium.Cartesian3.fromDegreesArrayHeights([
-                                startLon, startLat, 17000,
-                                midLon, midLat, 22000,
-                                endLon, endLat, 25000,
+                                startLon, startLat, isLikelyLand ? 24000 : 17000,
+                                midLon, midLat, isLikelyLand ? 28500 : 22000,
+                                endLon, endLat, isLikelyLand ? 31500 : 25000,
                             ]),
-                            width: Math.max(0.85, Math.min(1.8, (0.82 + speed / 22) * (isAsiaInterior ? 1.12 : 1.0))),
+                            width: Math.max(0.9, Math.min(2.0, (0.82 + speed / 22) * (isAsiaInterior ? 1.12 : isLikelyLand ? 1.08 : 1.0))),
                             material: new PolylineTrailMaterialProperty(
                                 color.withAlpha(Math.max(0.14, color.alpha - Math.abs(offsetScale) * 0.05)),
                                 Math.max(720, 1900 - speed * 65 + k * 110 + latticeId * 90 - (isAsiaInterior ? 120 : 0))
