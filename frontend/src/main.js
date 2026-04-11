@@ -6,7 +6,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 // Three.js kept for future magnetosphere/solar wind overlay
 import * as THREE from 'three';
 
-const API = window.location.port === '5173' ? '/api' : `http://localhost:8001/api`;
+const API = window.location.port === '5173' || window.location.port === '5174' ? '/api' : `http://localhost:8000/api`;
 const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
 const POLL = 30_000;
 
@@ -254,6 +254,7 @@ const layerVisible = {
     magnetometers: false, weather: true, 'wind-field': true, 'ocean-currents': true, clouds: true, geojson: false,
     'magnetic-field': true, 'solar-wind': true, telluric: true,
     'magnetic-anomalies': true,
+    'ocean-lights': true,
 };
 
 // --- Live state variables (updated by poll loop) ---
@@ -1166,6 +1167,87 @@ async function updateMagneticAnomalies(data) {
 }
 
 // ============================================================
+// OCEAN LIGHT PHENOMENA (te lapa, St. Elmo's fire, EQ lights)
+// ============================================================
+async function updateOceanLightPhenomena(data) {
+    const ds = await getDataSource('ocean-lights');
+    ds.entities.removeAll();
+    if (!data) return;
+
+    // Draw ocean current paths
+    if (data.currents) {
+        for (const c of data.currents) {
+            if (!c.path || c.path.length < 2) continue;
+            const flat = c.path.flatMap(p => [p[0], p[1]]);
+            ds.entities.add({
+                polyline: {
+                    positions: Cesium.Cartesian3.fromDegreesArray(flat),
+                    width: 2.5,
+                    material: new Cesium.ColorMaterialProperty(
+                        Cesium.Color.fromCssColorString(c.color || '#4488ff').withAlpha(0.35)
+                    ),
+                    clampToGround: false,
+                },
+                properties: { _type: 'ocean_current', name: c.name },
+            });
+        }
+    }
+
+    // Draw report markers
+    if (data.reports) {
+        for (const r of data.reports) {
+            let color, size, symbol;
+            if (r.type === 'te_lapa') {
+                color = new Cesium.Color(0.2, 1.0, 0.8, 0.9);  // cyan-green
+                size = 10;
+                symbol = '\u2726';  // star
+            } else if (r.type === 'st_elmo') {
+                color = new Cesium.Color(0.5, 0.4, 1.0, 0.9);  // violet
+                size = 9;
+                symbol = '\u26A1';  // lightning
+            } else {
+                color = new Cesium.Color(1.0, 0.5, 0.2, 0.9);  // orange
+                size = 8;
+                symbol = '\u25C6';  // diamond
+            }
+
+            // Marker point
+            ds.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(r.lon, r.lat, 3000),
+                point: {
+                    pixelSize: size,
+                    color: color,
+                    outlineColor: Cesium.Color.WHITE.withAlpha(0.4),
+                    outlineWidth: 1,
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                },
+                label: {
+                    text: r.name,
+                    font: '9px monospace',
+                    fillColor: color,
+                    pixelOffset: new Cesium.Cartesian2(0, -14),
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    scale: 0.75,
+                },
+                properties: { _type: 'ocean_light', ...r },
+            });
+
+            // Te lapa: add a radial glow to represent the island E-field perturbation
+            if (r.type === 'te_lapa') {
+                ds.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(r.lon, r.lat, 500),
+                    ellipsoid: {
+                        radii: new Cesium.Cartesian3(130000, 130000, 2000),  // 130 km radius
+                        material: color.withAlpha(0.06),
+                    },
+                    properties: { _type: 'ocean_light', ...r },
+                });
+            }
+        }
+    }
+}
+
+// ============================================================
 // WEATHER MARKERS (precipitation + lightning)
 // ============================================================
 async function renderWeatherMarkers(precipData) {
@@ -1932,6 +2014,7 @@ handler.setInputAction(click => {
         if (props._type === 'earthquake') { showDetail(props); return; }
         if (props._type === 'magnetometer') { showMagDetail(props); return; }
         if (props._type === 'anomaly') { showAnomalyDetail(props); return; }
+        if (props._type === 'ocean_light') { showOceanLightDetail(props); return; }
     }
     document.getElementById('detail').style.display = 'none';
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
@@ -1957,6 +2040,21 @@ function showMagDetail(st) {
     content.innerHTML = `<h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
         <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${st.lat?.toFixed(2)}N, ${st.lon?.toFixed(2)}E</span></div>`;
+    panel.style.display = 'block';
+}
+
+function showOceanLightDetail(r) {
+    const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
+    const typeColors = { te_lapa: '#33ffcc', st_elmo: '#8866ff', eq_light: '#ff8833' };
+    const typeNames = { te_lapa: 'Te Lapa', st_elmo: "St. Elmo's Fire", eq_light: 'Earthquake Light' };
+    const c = typeColors[r.type] || '#fff';
+    content.innerHTML = `<h3 style="color:${c}">${typeNames[r.type] || r.type}</h3>
+        <div class="row"><span class="k">Report</span><span class="val">${r.name}</span></div>
+        <div class="row"><span class="k">Observer</span><span class="val">${r.observer || '?'}</span></div>
+        <div class="row"><span class="k">Date</span><span class="val">${r.year || '?'}</span></div>
+        <div class="row"><span class="k">Location</span><span class="val">${r.lat?.toFixed(1)}°, ${r.lon?.toFixed(1)}°</span></div>
+        <div class="row"><span class="k">Ocean current</span><span class="val" style="color:${c}">${r.current || '?'}</span></div>
+        ${r.desc ? `<div style="margin-top:6px;font-size:11px;color:#aaa;line-height:1.4">${r.desc}</div>` : ''}`;
     panel.style.display = 'block';
 }
 
@@ -2534,6 +2632,7 @@ async function poll() {
         fetchJSON('/pore_pressure'),         // 18
         fetchJSON('/cloud_charge'),          // 19
         fetchJSON('/magnetic_anomalies'),    // 20
+        fetchJSON('/ocean_light_phenomena'), // 21
     ]);
     const v = i => results[i]?.value;
     if (v(0)) updateEarthquakes(v(0));
@@ -2562,6 +2661,7 @@ async function poll() {
     if (v(18)) updPorePressure(v(18));
     if (v(19)) updCloudCharge(v(19));
     if (v(20)) updateMagneticAnomalies(v(20));
+    if (v(21)) updateOceanLightPhenomena(v(21));
     const kpVal = v(2)?.current ?? currentKp;
     const dstVal = v(8)?.current ?? currentDst;
     updateStormLevel(kpVal, dstVal);

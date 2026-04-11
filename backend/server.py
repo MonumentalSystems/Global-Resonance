@@ -1697,6 +1697,101 @@ def get_pore_pressure():
     }
 
 
+@app.get("/api/ocean_light_phenomena")
+def get_ocean_light_phenomena():
+    """Historical reports of te lapa, St. Elmo's fire, and related
+    ocean electromagnetic light phenomena, mapped to ocean currents."""
+    import math
+
+    reports = [
+        # Te lapa observations
+        {"name": "Te lapa — Solomon Islands", "lat": -9.4, "lon": 160.0,
+         "type": "te_lapa", "year": "traditional", "observer": "Kaveia & George",
+         "current": "South Equatorial Current",
+         "desc": "Navigation lights pointing toward islands, 0.5-1.8m depth, up to 130 km range"},
+        {"name": "Te lapa — Tonga", "lat": -21.2, "lon": -175.2,
+         "type": "te_lapa", "year": "traditional", "observer": "Tongan navigators",
+         "current": "South Equatorial / Pacific gyre",
+         "desc": "Called 'te tapa' (to burst forth with light) or 'ulo aetahi' (Glory of the Seas)"},
+        {"name": "Te lapa — Nikunau (Kiribati)", "lat": -1.35, "lon": 176.45,
+         "type": "te_lapa", "year": "traditional", "observer": "Gilbertese navigators",
+         "current": "Equatorial Counter-Current",
+         "desc": "Called 'te mata' — navigation flashes near reef islands"},
+        {"name": "Te lapa — Tikopia", "lat": -12.3, "lon": 168.8,
+         "type": "te_lapa", "year": "1972", "observer": "David Lewis",
+         "current": "South Equatorial Current",
+         "desc": "Lewis documented in 'We, the Navigators' — Tikopians reportedly unaware"},
+        {"name": "Te lapa — Vaeakau-Taumako", "lat": -9.8, "lon": 167.0,
+         "type": "te_lapa", "year": "1993-2003", "observer": "Marianne George",
+         "current": "South Equatorial Current",
+         "desc": "George observed with Kaveia — streaks, flashes, glowing plaques"},
+
+        # St. Elmo's fire at sea
+        {"name": "Columbus, 1492", "lat": 28.0, "lon": -65.0,
+         "type": "st_elmo", "year": "1492", "observer": "Christopher Columbus",
+         "current": "Gulf Stream / N Atlantic gyre",
+         "desc": "Observed crossing the North Atlantic — crew terrified then reassured"},
+        {"name": "Magellan / Pigafetta, 1519", "lat": -35.0, "lon": -52.0,
+         "type": "st_elmo", "year": "1519", "observer": "Antonio Pigafetta",
+         "current": "Brazil-Falkland convergence",
+         "desc": "Documented off South America during circumnavigation"},
+        {"name": "Bligh, HMS Bounty, 1788", "lat": -42.6, "lon": -34.6,
+         "type": "st_elmo", "year": "1788", "observer": "William Bligh",
+         "current": "Brazil-Falkland + ACC",
+         "desc": "Corpo-Sant on yard arms, 42°34'S 34°38'W, tropical squalls"},
+        {"name": "Noah, Hillsborough #1, 1799", "lat": -45.0, "lon": 30.0,
+         "type": "st_elmo", "year": "1799", "observer": "William Noah",
+         "current": "Antarctic Circumpolar Current",
+         "desc": "Southern Ocean between Cape Town and Sydney"},
+        {"name": "Noah, Hillsborough #2, 1799", "lat": -35.0, "lon": 155.0,
+         "type": "st_elmo", "year": "1799", "observer": "William Noah",
+         "current": "East Australian Current",
+         "desc": "Tasman Sea near Port Jackson (Sydney)"},
+        {"name": "Darwin, HMS Beagle, 1832", "lat": -35.0, "lon": -56.0,
+         "type": "st_elmo", "year": "1832", "observer": "Charles Darwin",
+         "current": "Brazil-Falkland convergence",
+         "desc": "Masts pointed with blue flame; sea luminous, penguin tracks fiery"},
+        {"name": "Air France 447, 2009", "lat": 2.0, "lon": -30.0,
+         "type": "st_elmo", "year": "2009", "observer": "Flight crew",
+         "current": "N Equatorial Counter-Current / ITCZ",
+         "desc": "Appeared 23 min before Atlantic crash; ITCZ thunderstorm"},
+
+        # Earthquake lights at sea / coastal
+        {"name": "Japan Trench EQ lights", "lat": 38.3, "lon": 142.4,
+         "type": "eq_light", "year": "2011", "observer": "Multiple",
+         "current": "Kuroshio extension",
+         "desc": "Blue-white flashes reported offshore before Tōhoku M9.1"},
+        {"name": "Chile coastal lights", "lat": -36.1, "lon": -72.9,
+         "type": "eq_light", "year": "2010", "observer": "Multiple",
+         "current": "Humboldt Current",
+         "desc": "Lights reported before Maule M8.8 earthquake"},
+    ]
+
+    # Add ocean current paths for rendering
+    currents = [
+        {"name": "Gulf Stream", "color": "#ff4444",
+         "path": [[-80,25],[-75,35],[-60,40],[-40,45],[-20,50]]},
+        {"name": "Kuroshio", "color": "#ff6644",
+         "path": [[125,25],[130,30],[140,35],[155,38],[170,40]]},
+        {"name": "S. Equatorial (Pacific)", "color": "#44aaff",
+         "path": [[-120,-10],[-140,-8],[-160,-8],[-180,-10],[175,-10],[165,-10]]},
+        {"name": "Brazil Current", "color": "#ff8844",
+         "path": [[-40,-10],[-42,-15],[-45,-20],[-48,-25],[-50,-30],[-52,-35]]},
+        {"name": "Falkland Current", "color": "#4488ff",
+         "path": [[-65,-55],[-62,-50],[-58,-45],[-55,-40],[-52,-35]]},
+        {"name": "ACC", "color": "#88ccff",
+         "path": [[-60,-55],[-30,-55],[0,-55],[30,-55],[60,-55],[90,-55],[120,-55],[150,-55],[180,-55]]},
+        {"name": "Agulhas", "color": "#ff4488",
+         "path": [[35,-30],[32,-33],[28,-35],[25,-36],[22,-37]]},
+        {"name": "E. Australian", "color": "#ff6688",
+         "path": [[154,-25],[153,-30],[152,-33],[153,-35],[155,-38]]},
+        {"name": "Equatorial Counter-Current", "color": "#44ccaa",
+         "path": [[-170,5],[-150,5],[-130,5],[-110,5]]},
+    ]
+
+    return {"reports": reports, "currents": currents}
+
+
 @app.get("/api/magnetic_anomalies")
 def get_magnetic_anomalies():
     """Major crustal magnetic anomalies from ore deposits and BIFs.
