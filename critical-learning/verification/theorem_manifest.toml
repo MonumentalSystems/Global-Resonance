@@ -1,0 +1,62 @@
+[[theorems]]
+id = "commutator_antisymmetry"
+category = "algebraic"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/Bivectors/CommutatorProperties.lean"
+rust_module = "harmonic-core/src/clifford_cl3.rs"
+rust_tests = ["commutator antisymmetry property test"]
+status = "implemented"
+notes = "Check sampled multivectors satisfy [a,b] + [b,a] ~= 0."
+
+[[theorems]]
+id = "bivector_subspace_closure"
+category = "algebraic"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/Bivectors/BivectorSubspace.lean"
+rust_module = "harmonic-core/src/clifford_cl3.rs"
+rust_tests = ["bivector grade-discipline tests"]
+status = "implemented"
+notes = "Verify bivector-sector operations stay in the intended grade slice."
+
+[[theorems]]
+id = "universal_algebra_coupling_law"
+category = "dynamical"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/Foundations/UniversalAlgebra.lean"
+rust_module = "critical-learning/src/model.rs"
+rust_tests = ["lawful update structure test"]
+status = "implemented"
+notes = "Confirm the Rust update keeps the fixed lawful coupling structure and does not introduce ad hoc coefficients besides J."
+
+[[theorems]]
+id = "maxwell_bivector_sync_chain"
+category = "dynamical"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/KeyTheorems/MaxwellBivector.lean"
+rust_module = "harmonic-core/src/gauge.rs"
+rust_tests = ["bridge diagnostics and law notes"]
+status = "planned"
+notes = "This is a correspondence target rather than a direct test at first."
+
+[[theorems]]
+id = "lohe_kt_critical_target"
+category = "critical"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/LieStructure/LoheModel.lean"
+rust_module = "critical-learning/src/model.rs"
+rust_tests = ["critical constant test", "J sweep regime separation test"]
+status = "implemented"
+notes = "J_c = 2/pi should be explicit and the architecture should be evaluated around that value."
+
+[[theorems]]
+id = "kt_phase_boundary"
+category = "critical"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/KeyTheorems/RGFlow.lean"
+rust_module = "critical-learning/src/model.rs"
+rust_tests = ["J sweep regime separation test"]
+status = "implemented"
+notes = "RGFlow.lean defines J_critical = 2 / pi and proves the sign split above and below the critical boundary."
+
+[[theorems]]
+id = "inhibition_discharge_proxy"
+category = "dynamical"
+lean_file = "/home/ubuntu/lean/LeanProofs/LeanProofs/KeyTheorems/CoulombGas/VortexRG.lean"
+rust_module = "critical-learning/src/model.rs"
+rust_tests = ["inhibition threshold gates discharge test"]
+status = "implemented"
+notes = "The threshold mechanism is treated as a biological parameterization of the proved vortex/fugacity suppression-proliferation boundary; the remaining gap is exact parameter identification, not the existence of the boundary itself."

@@ -1,0 +1,144 @@
+[package]
+name = "solar-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Real-time solar flare monitoring and atmospheric coupling alerting"
+
+[lib]
+name = "solar_monitor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "solar-monitor"
+path = "src/bin/solar-monitor.rs"
+
+[[bin]]
+name = "solar-backtest"
+path = "src/bin/solar-backtest.rs"
+
+[[bin]]
+name = "solar-analysis"
+path = "src/bin/solar-analysis.rs"
+
+[[bin]]
+name = "solar-analysis-minute"
+path = "src/bin/solar-analysis-minute.rs"
+
+[[bin]]
+name = "solar-7day"
+path = "src/bin/solar-7day.rs"
+
+[[bin]]
+name = "solar-tune"
+path = "src/bin/solar-tune.rs"
+
+[[bin]]
+name = "solar-agreement"
+path = "src/bin/solar-agreement.rs"
+
+[[bin]]
+name = "solar-diag"
+path = "src/bin/solar-diag.rs"
+
+[[bin]]
+name = "solar-7day-v2"
+path = "src/bin/solar-7day-v2.rs"
+
+[[bin]]
+name = "solar-precursor"
+path = "src/bin/solar-precursor.rs"
+
+[[bin]]
+name = "solar-escalation-test"
+path = "src/bin/solar-escalation-test.rs"
+
+[[bin]]
+name = "solar-backtest-escalation"
+path = "src/bin/solar-backtest-escalation.rs"
+
+[[bin]]
+name = "solar-backtest-goes"
+path = "src/bin/solar-backtest-goes.rs"
+
+[[bin]]
+name = "solar-state-test"
+path = "src/bin/solar-state-test.rs"
+
+[[bin]]
+name = "solar-backtest-full"
+path = "src/bin/solar-backtest-full.rs"
+
+[[bin]]
+name = "solar-fetch-xrs"
+path = "src/bin/solar-fetch-xrs.rs"
+
+[[bin]]
+name = "solar-backtest-xrs"
+path = "src/bin/solar-backtest-xrs.rs"
+
+[[bin]]
+name = "solar-backtest-dbdt"
+path = "src/bin/solar-backtest-dbdt.rs"
+
+[[bin]]
+name = "solar-fp-criticality"
+path = "src/bin/solar-fp-criticality.rs"
+
+[[bin]]
+name = "solar-precursor-full"
+path = "src/bin/solar-precursor-full.rs"
+
+[[bin]]
+name = "solar-backtest-commutator"
+path = "src/bin/solar-backtest-commutator.rs"
+
+[[bin]]
+name = "solar-backtest-criticality"
+path = "src/bin/solar-backtest-criticality.rs"
+
+[[bin]]
+name = "solar-tune-criticality"
+path = "src/bin/solar-tune-criticality.rs"
+
+[[bin]]
+name = "solar-find-misses"
+path = "src/bin/solar-find-misses.rs"
+
+[[bin]]
+name = "solar-fp-analysis"
+path = "src/bin/solar-fp-analysis.rs"
+
+[[bin]]
+name = "solar-train"
+path = "src/bin/solar-train.rs"
+
+[[bin]]
+name = "solar-eval"
+path = "src/bin/solar-eval.rs"
+
+[[bin]]
+name = "solar-train-v2"
+path = "src/bin/solar-train-v2.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.5", features = ["cors"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+csv = "1.3"
+flate2 = "1.0"
+rayon = "1.10"
+harmonic-core = { path = "../../ms harmonic rust/HarmonicRust/harmonic-core", default-features = false }
+critical-learning = { path = "../critical-learning" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
