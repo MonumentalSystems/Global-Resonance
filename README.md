@@ -40,10 +40,3 @@ npx serve .    # or any static file server
 | SDO Sun view | NASA SDO | 15-min | EUV 193A + HMI magnetogram |
 | Swarm satellite | ESA VirES | ~6h latency | Orbital track + F field |
 | Magnetometers | USGS | 1-min | Ground station B-field |
-
-## Based on
-
-- Paper XXV: "The Jelly Ball" — solar-seismic coupling from the bivector commutator
-- Paper XII: Navier-Stokes regularity from the Lohe manifold constraint
-- Paper XXIX: "The Ages of Earth" — field reversals and the cycle of disordering
-- Paper VIII: Solar system and terrestrial dynamics
