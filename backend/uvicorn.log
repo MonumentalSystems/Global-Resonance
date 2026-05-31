@@ -117465,3 +117465,79 @@ INFO:     127.0.0.1:55525 - "GET /api/tec HTTP/1.1" 200 OK
 INFO:     127.0.0.1:65520 - "GET /api/precipitation HTTP/1.1" 200 OK
 INFO:     127.0.0.1:57150 - "GET /api/lightning HTTP/1.1" 200 OK
 INFO:     127.0.0.1:61485 - "GET /api/pore_pressure HTTP/1.1" 200 OK
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\__main__.py", line 4, in <module>
+    uvicorn.main()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\click\core.py", line 1442, in __call__
+    return self.main(*args, **kwargs)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\click\core.py", line 1363, in main
+    rv = self.invoke(ctx)
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\click\core.py", line 1226, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\click\core.py", line 794, in invoke
+    return callback(*args, **kwargs)
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\main.py", line 413, in main
+    run(
+    ~~~^
+        app,
+        ^^^^
+    ...<45 lines>...
+        h11_max_incomplete_event_size=h11_max_incomplete_event_size,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\main.py", line 580, in run
+    server.run()
+    ~~~~~~~~~~^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\server.py", line 66, in run
+    return asyncio.run(self.serve(sockets=sockets))
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\server.py", line 70, in serve
+    await self._serve(sockets)
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\server.py", line 77, in _serve
+    config.load()
+    ~~~~~~~~~~~^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\config.py", line 435, in load
+    self.loaded_app = import_from_string(self.app)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\uvicorn\importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+  File "C:\Python313\Lib\importlib\__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 1026, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "C:\Users\lisam\geo resonance\Global-Resonance\backend\server.py", line 23, in <module>
+    app = FastAPI(title="Global Resonance", version="0.1.0")
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\fastapi\applications.py", line 896, in __init__
+    ] = webhooks or routing.APIRouter()
+                    ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\lisam\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 837, in __init__
+    super().__init__(
+    ~~~~~~~~~~~~~~~~^
+        routes=routes,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        lifespan=lifespan,
+        ^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'
