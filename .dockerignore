@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Large local datasets (provided via volume at runtime)
+data/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Build/output artifacts
+backend/output/
+**/*.png
+backend/uvicorn.log
+**/*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docs (not needed in image)
+*.md
+backend/*.md

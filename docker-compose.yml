@@ -1,0 +1,27 @@
+services:
+  global-resonance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Coolify injects PORT; the app binds 0.0.0.0:$PORT inside the container.
+    environment:
+      - PORT=8000
+      # Optional: external solar-monitor SSE source (defaults to localhost:8089 if unset)
+      # - SOLAR_MONITOR_URL=http://solar-monitor:8089
+    ports:
+      - "8000:8000"
+    volumes:
+      # 620 MB datasets are not baked into the image. Drop them here (or upload
+      # via Coolify's storage UI) and the data-backed endpoints light up.
+      # Maps to DATA_DIR = <repo>/data, i.e. /app/data in the container.
+      - global-resonance-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/plates"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  global-resonance-data:

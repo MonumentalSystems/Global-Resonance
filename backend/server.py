@@ -2304,7 +2304,10 @@ async def solar_alerts_sse():
     return await _sse_proxy("alerts")
 
 
-# Serve frontend if available
-frontend_dir = Path(__file__).parent.parent / "frontend"
+# Serve frontend if available. Prefer the Vite-built output (frontend/dist),
+# fall back to raw source (only usable behind the Vite dev server).
+_frontend_root = Path(__file__).parent.parent / "frontend"
+_frontend_dist = _frontend_root / "dist"
+frontend_dir = _frontend_dist if _frontend_dist.exists() else _frontend_root
 if frontend_dir.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
