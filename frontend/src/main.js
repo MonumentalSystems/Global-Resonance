@@ -6,7 +6,10 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 // Three.js kept for future magnetosphere/solar wind overlay
 import * as THREE from 'three';
 
-const API = window.location.port === '5173' || window.location.port === '5174' ? '/api' : `http://localhost:8000/api`;
+// Same-origin '/api' works everywhere: the Vite dev server proxies /api -> :8000
+// (see vite.config.js), and in production FastAPI serves the API and this
+// frontend from the same origin. Override with window.API_BASE if ever needed.
+const API = window.API_BASE || '/api';
 const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
 const POLL = 30_000;
 
