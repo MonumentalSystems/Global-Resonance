@@ -20,12 +20,30 @@ import httpx
 import asyncio
 import os
 
-app = FastAPI(title="Global Resonance", version="0.1.0")
+app = FastAPI(
+    title="Global Resonance API",
+    version="0.1.0",
+    description=(
+        "Real-time space weather and geophysical monitoring. Most endpoints fetch "
+        "live from public sources (NOAA SWPC, USGS, NASA, NMDB, IRIS, Open-Meteo) "
+        "and cache in-memory for 5 minutes.\n\n"
+        "- **Swagger UI**: [/docs](/docs)\n"
+        "- **ReDoc**: [/redoc](/redoc)\n"
+        "- **OpenAPI schema**: [/openapi.json](/openapi.json)"
+    ),
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 CACHE = {}  # simple in-memory cache with TTL
 CACHE_TTL = 300  # 5 minutes
+
+# NASA DONKI / APOD key. DEMO_KEY works but is rate-limited (30/hr, 50/day).
+# Get a free key at https://api.nasa.gov and set NASA_API_KEY to lift the limit.
+NASA_API_KEY = os.environ.get("NASA_API_KEY", "DEMO_KEY")
 
 
 def cached_fetch(key, url, ttl=CACHE_TTL):
@@ -366,10 +384,13 @@ def get_sun():
 @app.get("/api/cosmic_rays")
 def get_cosmic_rays():
     """Cosmic ray neutron monitor data for Forbush decrease detection."""
-    # Check for cached NMDB data
+    # Check for cached NMDB data. refresh_data.py writes one file per station
+    # per month (cosmic_rays_<STATION>_<YYYYMM>_clean.csv); pick the latest.
     result = {"stations": {}}
+    sw_dir = DATA_DIR / "solar_wind"
     for station in ["OULU", "ROME", "NEWK", "THUL"]:
-        f = DATA_DIR / "solar_wind" / f"cosmic_rays_{station}_202603_clean.csv"
+        matches = sorted(sw_dir.glob(f"cosmic_rays_{station}_*_clean.csv")) if sw_dir.exists() else []
+        f = matches[-1] if matches else (sw_dir / f"cosmic_rays_{station}_202603_clean.csv")
         if f.exists():
             lines = f.read_text().strip().split("\n")[1:]  # skip header
             entries = []
@@ -502,7 +523,7 @@ def get_cme_predict(
     # DONKI prediction (if available from cache)
     donki_arrival = None
     donki_data = cached_fetch("donki_cme",
-        "https://api.nasa.gov/DONKI/CME?startDate=2026-03-28&endDate=2026-03-31&api_key=DEMO_KEY",
+        f"https://api.nasa.gov/DONKI/CME?startDate=2026-03-28&endDate=2026-03-31&api_key={NASA_API_KEY}",
         ttl=600)
     if donki_data:
         for cme in donki_data:
@@ -563,7 +584,7 @@ def get_cme():
 
     # Fetch recent CMEs from DONKI cache
     donki = cached_fetch("donki_cme",
-        "https://api.nasa.gov/DONKI/CME?startDate=2026-03-28&endDate=2026-03-31&api_key=DEMO_KEY",
+        f"https://api.nasa.gov/DONKI/CME?startDate=2026-03-28&endDate=2026-03-31&api_key={NASA_API_KEY}",
         ttl=600)
 
     active_cmes = []
@@ -598,7 +619,7 @@ def get_cme():
 def get_flares():
     """Recent solar flares from DONKI."""
     data = cached_fetch("donki_flares",
-        "https://api.nasa.gov/DONKI/FLR?startDate=2026-03-28&endDate=2026-03-31&api_key=DEMO_KEY",
+        f"https://api.nasa.gov/DONKI/FLR?startDate=2026-03-28&endDate=2026-03-31&api_key={NASA_API_KEY}",
         ttl=600)
     if not data:
         return {"flares": []}
