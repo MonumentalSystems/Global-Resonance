@@ -1,0 +1,5 @@
+# Shell scripts and Docker files must use LF so they run inside Linux containers
+*.sh           text eol=lf
+entrypoint.sh  text eol=lf
+Dockerfile     text eol=lf
+*.dockerfile   text eol=lf
