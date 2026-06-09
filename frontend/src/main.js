@@ -152,8 +152,21 @@ viewer.scene.globe.dynamicAtmosphereLightingFromSun = true;
 viewer.scene.globe.showGroundAtmosphere = true;
 viewer.scene.globe.atmosphereBrightnessShift = -0.1;
 
+// Occlude entities behind the globe. Without this, markers/labels on the far
+// side render through the Earth and appear over the wrong continents, shifting
+// as the camera rotates (looks like they "slide" with the viewer).
+viewer.scene.globe.depthTestAgainstTerrain = true;
+
+// Markers within this camera distance (m) skip depth-testing so near-surface
+// points/labels stay crisp without z-fighting; beyond it (e.g. the far side of
+// the globe) the depth buffer occludes them. ~2 Earth radii.
+const DEPTH_TEST_NEAR = 1.3e7;
+
 // Cesium renders the globe, sky, stars — Three.js overlays space physics on top
 viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#030308');
+
+// Expose the viewer + Cesium namespace for console debugging and external tools.
+if (typeof window !== 'undefined') { window.viewer = viewer; window.Cesium = Cesium; }
 viewer.scene.sun.show = true;
 viewer.scene.moon.show = true;
 viewer.scene.skyBox.show = true;
@@ -320,7 +333,7 @@ async function updateEarthquakes(data) {
                 color: color,
                 outlineColor: Cesium.Color.BLACK.withAlpha(0.3),
                 outlineWidth: 1,
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                disableDepthTestDistance: DEPTH_TEST_NEAR,
                 heightReference: Cesium.HeightReference.NONE,
             },
             properties: { ...eq, _type: 'earthquake' },
@@ -333,7 +346,7 @@ async function updateEarthquakes(data) {
                 point: {
                     pixelSize: size * 4,
                     color: color.withAlpha(0.1),
-                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    disableDepthTestDistance: DEPTH_TEST_NEAR,
                 },
             });
         }
@@ -404,7 +417,7 @@ async function updateJellyBall(data) {
                 font: '9px monospace',
                 fillColor: color,
                 pixelOffset: new Cesium.Cartesian2(0, -6),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                disableDepthTestDistance: DEPTH_TEST_NEAR,
                 scale: 0.7,
             },
         });
@@ -430,7 +443,7 @@ async function updateSubsolar(data) {
             color: Cesium.Color.YELLOW,
             outlineColor: Cesium.Color.ORANGE,
             outlineWidth: 2,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            disableDepthTestDistance: DEPTH_TEST_NEAR,
         },
         label: {
             text: 'SUBSOLAR',
@@ -438,7 +451,7 @@ async function updateSubsolar(data) {
             fillColor: Cesium.Color.YELLOW,
             style: Cesium.LabelStyle.FILL,
             pixelOffset: new Cesium.Cartesian2(0, -18),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            disableDepthTestDistance: DEPTH_TEST_NEAR,
         },
     });
 
@@ -461,7 +474,7 @@ async function updateSubsolar(data) {
         point: {
             pixelSize: 10,
             color: new Cesium.Color(0.8, 0.5, 0.8, 0.5),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            disableDepthTestDistance: DEPTH_TEST_NEAR,
         },
     });
 
@@ -603,12 +616,12 @@ async function buildMagneticField(subsolarData) {
     for (const pole of [DIPOLE_NORTH, DIPOLE_SOUTH]) {
         ds.entities.add({
             position: Cesium.Cartesian3.fromDegrees(pole.lon, pole.lat, 5000),
-            point: { pixelSize: 8, color: Cesium.Color.CYAN, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+            point: { pixelSize: 8, color: Cesium.Color.CYAN, disableDepthTestDistance: DEPTH_TEST_NEAR },
             label: {
                 text: pole.lat > 0 ? 'N mag' : 'S mag',
                 font: '9px monospace', fillColor: Cesium.Color.CYAN,
                 pixelOffset: new Cesium.Cartesian2(12, 0),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                disableDepthTestDistance: DEPTH_TEST_NEAR,
             },
         });
     }
@@ -782,7 +795,7 @@ async function buildSolarWindFlow(subsolarData) {
             font: '10px monospace',
             fillColor: bzColor,
             pixelOffset: new Cesium.Cartesian2(0, 0),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            disableDepthTestDistance: DEPTH_TEST_NEAR,
             showBackground: true,
             backgroundColor: Cesium.Color.BLACK.withAlpha(0.6),
         },
@@ -987,7 +1000,7 @@ async function buildTelluricCurrents(fieldData) {
                 text: `${path.name}\n${J.toFixed(0)} mA/km`,
                 font: '9px monospace', fillColor: color,
                 pixelOffset: new Cesium.Cartesian2(0, -8),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY, scale: 0.8,
+                disableDepthTestDistance: DEPTH_TEST_NEAR, scale: 0.8,
                 showBackground: true, backgroundColor: Cesium.Color.BLACK.withAlpha(0.5),
             },
         });
@@ -1086,14 +1099,14 @@ async function updateMagnetometers(data) {
                 color: color,
                 outlineColor: Cesium.Color.WHITE.withAlpha(0.3),
                 outlineWidth: 1,
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                disableDepthTestDistance: DEPTH_TEST_NEAR,
             },
             label: {
                 text: st.code || '',
                 font: '9px monospace',
                 fillColor: color,
                 pixelOffset: new Cesium.Cartesian2(0, -12),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                disableDepthTestDistance: DEPTH_TEST_NEAR,
                 scale: 0.8,
             },
             properties: { _type: 'magnetometer', ...st },
@@ -1161,7 +1174,7 @@ async function updateMagneticAnomalies(data) {
                 outlineWidth: 2,
                 style: Cesium.LabelStyle.FILL_AND_OUTLINE,
                 pixelOffset: new Cesium.Cartesian2(0, -18),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                disableDepthTestDistance: DEPTH_TEST_NEAR,
                 scale: 0.85,
             },
             properties: { _type: 'anomaly', ...anom },
@@ -1222,14 +1235,14 @@ async function updateOceanLightPhenomena(data) {
                     color: color,
                     outlineColor: Cesium.Color.WHITE.withAlpha(0.4),
                     outlineWidth: 1,
-                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    disableDepthTestDistance: DEPTH_TEST_NEAR,
                 },
                 label: {
                     text: r.name,
                     font: '9px monospace',
                     fillColor: color,
                     pixelOffset: new Cesium.Cartesian2(0, -14),
-                    disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                    disableDepthTestDistance: DEPTH_TEST_NEAR,
                     scale: 0.75,
                 },
                 properties: { _type: 'ocean_light', ...r },
@@ -1928,7 +1941,7 @@ async function renderGeoJSON(geojson) {
         } else if (geom.type === 'Point') {
             ds.entities.add({
                 position: Cesium.Cartesian3.fromDegrees(geom.coordinates[0], geom.coordinates[1]),
-                point: { pixelSize: 8, color, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+                point: { pixelSize: 8, color, disableDepthTestDistance: DEPTH_TEST_NEAR },
             });
         } else if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
             const polys = geom.type === 'MultiPolygon' ? geom.coordinates : [geom.coordinates];
