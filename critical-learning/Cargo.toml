@@ -10,6 +10,6 @@ name = "critical_learning"
 path = "src/lib.rs"
 
 [dependencies]
-harmonic-core = { path = "../../ms harmonic rust/HarmonicRust/harmonic-core", default-features = false }
+harmonic-core = { path = "../vendor/harmonic-core", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

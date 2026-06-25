@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use critical_learning::{
     CouplingTopology, CriticalLearningConfig, CriticalLearningModel, CriticalStepStats, J_CRITICAL,
 };
+#[cfg(feature = "ml-models")]
 use crate::models::solar_flare::{SolarFlareModel, N_SHARP_FIELDS};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -222,6 +223,8 @@ pub struct CriticalityDetector {
     // --- ML scoring (optional, loaded from checkpoint) ---
     /// Trained SolarFlareModel for manifold-native ML scoring.
     /// When present, `compute_score_ml()` runs the model on the SHARP buffer.
+    /// Only built with the `ml-models` feature (needs upstream harmonic-core).
+    #[cfg(feature = "ml-models")]
     ml_model: Option<SolarFlareModel>,
     /// Min-max normalization stats for ML model input.
     ml_norm: Option<crate::backtest::sharp_dataset::NormStats>,
@@ -338,6 +341,7 @@ impl CriticalityDetector {
             threshold,
             score_weights: [0.25, 0.20, 0.25, 0.20, 0.10], // default tuned weights
             planetary_kan: None,
+            #[cfg(feature = "ml-models")]
             ml_model: None,
             ml_norm: None,
             ml_score: 0.0,
@@ -437,6 +441,7 @@ impl CriticalityDetector {
             threshold,
             score_weights: [0.25, 0.20, 0.25, 0.20, 0.10],
             planetary_kan: None,
+            #[cfg(feature = "ml-models")]
             ml_model: None,
             ml_norm: None,
             ml_score: 0.0,
@@ -447,6 +452,7 @@ impl CriticalityDetector {
     ///
     /// Once loaded, `compute_score_ml()` returns model predictions alongside
     /// the physics-based v7 score. The ML score can be used in rank fusion.
+    #[cfg(feature = "ml-models")]
     pub fn load_ml_model(
         &mut self,
         model_path: &std::path::Path,
@@ -468,6 +474,7 @@ impl CriticalityDetector {
     /// Feeds the last `seq_len` SHARP snapshots through the trained
     /// SolarFlareModel. Returns P(flare ≥ C5.0 within prediction window).
     /// Returns 0.0 if no model loaded or insufficient data.
+    #[cfg(feature = "ml-models")]
     pub fn compute_score_ml(&mut self) -> f64 {
         let (model, norm) = match (&self.ml_model, &self.ml_norm) {
             (Some(m), Some(n)) => (m, n),
