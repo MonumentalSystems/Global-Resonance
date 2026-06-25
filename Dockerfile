@@ -13,7 +13,18 @@ COPY frontend/ ./
 RUN npm run build
 
 
-# ---------- Stage 2: Python API + static frontend ----------
+# ---------- Stage 2: build the Rust solar monitor ----------
+FROM rust:1-bookworm AS solar-monitor-build
+WORKDIR /build
+
+COPY vendor/ ./vendor/
+COPY critical-learning/ ./critical-learning/
+COPY solar-monitor/ ./solar-monitor/
+
+RUN cargo build --release --manifest-path solar-monitor/Cargo.toml --bin solar-monitor
+
+
+# ---------- Stage 3: Python API + static frontend + solar monitor ----------
 FROM python:3.11-slim AS runtime
 WORKDIR /app
 
@@ -35,6 +46,9 @@ COPY backend/ ./backend/
 
 # Built frontend from stage 1 -> /app/frontend/dist (matches server.py mount logic)
 COPY --from=frontend-build /build/dist ./frontend/dist
+
+# Rust solar monitor used by /api/solar/* proxy endpoints.
+COPY --from=solar-monitor-build /build/solar-monitor/target/release/solar-monitor /usr/local/bin/solar-monitor
 
 # JSON data files the backend reads directly at runtime
 # (server.py reads frontend/src/plates.json and frontend/assets/bronze_age_field.json)

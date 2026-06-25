@@ -1,0 +1,25 @@
+[package]
+name = "harmonic-core"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal vendored subset of harmonic-core: Clifford Cl(3) primitives only."
+license = "MIT"
+
+# This is a trimmed local vendor of MonumentalSystems/HarmonicRust's harmonic-core,
+# containing ONLY the self-contained `clifford_cl3` module that critical-learning
+# and solar-monitor's detectors depend on. The full crate (GPU, commutator-field,
+# ML models) is intentionally omitted — none of it is reachable from the detector
+# code path. See vendor/harmonic-core/README.md.
+
+[lib]
+name = "harmonic_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[features]
+# Feature names kept for compatibility with downstream `default-features = false`
+# usage; all are no-ops in this vendored subset.
+default = []
+metal-gpu = []
