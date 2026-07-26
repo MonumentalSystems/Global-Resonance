@@ -1,0 +1,44 @@
+{
+  "cancer_incidence": {
+    "name": "NCI State Cancer Profiles county incidence rates",
+    "url": "https://www.statecancerprofiles.cancer.gov/incidencerates/",
+    "resolution": "county",
+    "measure": "age-adjusted incidence per 100,000; latest five-year period",
+    "role": "outcome"
+  },
+  "soil_electrical_conductivity": {
+    "name": "USDA NRCS SOLUS100 Electrical Conductivity (saturated paste)",
+    "url": "https://www.nrcs.usda.gov/resources/data-and-reports/soil-landscapes-of-the-united-states-solus",
+    "resolution": "100 m, seven standard depths",
+    "measure": "saturated-paste EC; salinity-related, not RF reflectivity",
+    "role": "primary exposure proxy"
+  },
+  "soil_metals_observed": {
+    "name": "USGS Data Series 801 Soil Geochemical Landscapes",
+    "url": "https://pubs.usgs.gov/ds/801/",
+    "resolution": "4,857 sample sites; three depth/horizon samples",
+    "measure": "45 major and trace elements",
+    "role": "metals exposure and validation"
+  },
+  "soil_metals_predicted": {
+    "name": "USGS predictive trace-element rasters",
+    "url": "https://doi.org/10.5066/P14KZFIE",
+    "resolution": "approximately 2.45 km",
+    "measure": "posterior mean Co, Cu, Fe, Mn, Se, and Zn",
+    "role": "county zonal summaries with model-derived uncertainty caveat"
+  },
+  "radon": {
+    "name": "EPA Map of Radon Zones",
+    "url": "https://www.epa.gov/radon/epa-map-radon-zones-0",
+    "resolution": "county category",
+    "measure": "zone 1 high, zone 2 moderate, zone 3 low potential",
+    "role": "confounder and lung-cancer positive control"
+  },
+  "deep_conductivity_sensitivity": {
+    "name": "EarthScope CONUS-MT-2026 conductivity model",
+    "url": "https://ds.iris.edu/ds/products/emc-conus-mt-2026/",
+    "resolution": "continental 3-D lithosphere model",
+    "measure": "geophysical conductivity by depth",
+    "role": "sensitivity analysis; not a substitute for near-surface soil EC"
+  }
+}
