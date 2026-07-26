@@ -20,6 +20,17 @@ import httpx
 import asyncio
 import os
 
+try:
+    from .fault_hydromechanics import (
+        jellyball_hydromechanics_payload,
+        pore_pressure_response,
+    )
+except ImportError:  # server.py is commonly launched from backend/
+    from fault_hydromechanics import (
+        jellyball_hydromechanics_payload,
+        pore_pressure_response,
+    )
+
 app = FastAPI(
     title="Global Resonance API",
     version="0.1.0",
@@ -884,6 +895,7 @@ def get_jellyball_prediction():
             "bz": round(bz, 1),
             "v_sw": round(v_sw, 0),
         },
+        "fault_hydromechanics": jellyball_hydromechanics_payload(),
     }
 
 
@@ -1693,6 +1705,8 @@ def get_pore_pressure():
                 "tidal_pa": round(tidal_stress_pa, 2),
                 "total_pa": round(p_total, 2),
                 "pct_tectonic": round(frac * 100, 5),
+                "effective_normal_stress_change_pa": round(-p_total, 2),
+                "hydromechanical_response": pore_pressure_response(p_total / 1e6),
             }
 
         stations.append({
@@ -1715,6 +1729,8 @@ def get_pore_pressure():
             "diffusivity_m2s": D_default,
             "surface_B_uT": 50,
             "tectonic_stress_MPa": 1,
+            "sign_convention": "delta sigma_eff = -delta pore pressure",
+            "rupture_propagation": "requires a calibrated local barrier profile",
         },
     }
 
