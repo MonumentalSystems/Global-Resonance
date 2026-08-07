@@ -318,6 +318,7 @@ async function updateEarthquakes(data) {
     const ds = await getDataSource('earthquakes');
     ds.entities.removeAll();
     eqWaves.length = 0;
+    updateCompoundFaultContext(data?.compound_fault_advisories || []);
     if (!data?.earthquakes) return;
     const now = Date.now();
 
@@ -371,6 +372,27 @@ async function updateEarthquakes(data) {
         }
     }
     document.getElementById('st-eqs').textContent = data.earthquakes.length;
+}
+
+function updateCompoundFaultContext(advisories) {
+    const panel = document.getElementById('compound-fault-context');
+    const copy = document.getElementById('compound-fault-copy');
+    const source = document.getElementById('compound-fault-source');
+    if (!panel || !copy || !source) return;
+
+    const advisory = advisories.find(item => item?.active);
+    if (!advisory) {
+        panel.style.display = 'none';
+        copy.textContent = '';
+        source.removeAttribute('href');
+        return;
+    }
+
+    const additional = Math.max(0, advisories.filter(item => item?.active).length - 1);
+    const suffix = additional ? ` (+${additional} additional candidate${additional === 1 ? '' : 's'})` : '';
+    copy.textContent = `Candidate ${advisory.trigger_candidate}; monitor ${advisory.target} after authoritative fault attribution${suffix}.`;
+    source.href = advisory.source;
+    panel.style.display = 'block';
 }
 
 function greatCircleDegrees(lat, lon, radiusDeg, nPts = 120) {

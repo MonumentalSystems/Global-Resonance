@@ -48,6 +48,11 @@ app = FastAPI(
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+try:
+    from research_model_context import cascadia_nsaf_advisories, research_model_context
+except ImportError:  # supports `uvicorn backend.server:app` from the repository root
+    from backend.research_model_context import cascadia_nsaf_advisories, research_model_context
+
 DATA_DIR = Path(__file__).parent.parent / "data"
 CACHE = {}  # simple in-memory cache with TTL
 CACHE_TTL = 300  # 5 minutes
@@ -230,7 +235,18 @@ def get_earthquakes(hours: int = 72, min_mag: float = 4.5, limit: int = 500):
         except Exception:
             pass
 
-    return {"earthquakes": eqs, "subsolar": ss, "count": len(eqs)}
+    return {
+        "earthquakes": eqs,
+        "subsolar": ss,
+        "count": len(eqs),
+        "compound_fault_advisories": cascadia_nsaf_advisories(eqs),
+    }
+
+
+@app.get("/api/research/model-context")
+def get_research_model_context():
+    """Source-audited boundaries for recent fault, solar, and core results."""
+    return research_model_context()
 
 
 @app.get("/api/solar_wind")

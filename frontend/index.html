@@ -121,6 +121,19 @@
             animation: alert-slide 0.3s ease; }
         @keyframes alert-slide { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 
+        /* Research context is visually separate from calibrated live alerts. */
+        #compound-fault-context { display: none; margin-top: 5px; padding: 6px 7px;
+            border: 1px solid rgba(255,190,80,0.45); border-radius: 3px;
+            background: rgba(75,48,12,0.35); color: #dcc79c; }
+        #compound-fault-context .context-head { display: flex; align-items: center;
+            justify-content: space-between; gap: 6px; color: #ffd27a; font-size: 9px;
+            font-weight: bold; letter-spacing: 0.05em; }
+        #compound-fault-context .context-kind { color: #ad9362; font-size: 7px;
+            font-weight: normal; white-space: nowrap; }
+        #compound-fault-context .context-copy { margin-top: 3px; font-size: 8px;
+            line-height: 1.35; color: #c8b892; }
+        #compound-fault-context a { color: #ffd27a; }
+
         /* Connection dot */
         .conn-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 4px; }
         .conn-dot.live { background: #4f4; animation: conn-pulse 2s infinite; }
@@ -331,6 +344,17 @@
 
             <!-- Plate legend -->
             <div class="plate-legend" id="plate-legend"></div>
+
+            <div id="compound-fault-context" role="status" aria-live="polite">
+                <div class="context-head">
+                    <span>COMPOUND-FAULT CONTEXT</span>
+                    <span class="context-kind">RESEARCH · NOT A FORECAST</span>
+                </div>
+                <div class="context-copy" id="compound-fault-copy"></div>
+                <div class="context-copy">No probability or time window is inferred.
+                    <a id="compound-fault-source" target="_blank" rel="noopener noreferrer">Primary study</a>
+                </div>
+            </div>
 
             <!-- Geomagnetic -->
             <div class="metric-pair">
