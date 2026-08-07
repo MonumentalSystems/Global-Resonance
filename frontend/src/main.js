@@ -2697,8 +2697,50 @@ setInterval(poll, POLL);
 const DET_NAMES = ['zscore', 'cusum', 'hardness', 'rate', 'multichannel', 'proton', 'criticality'];
 function scoreColor(score) { return score < 0.3 ? '#44ff44' : score < 0.5 ? '#aaff44' : score < 0.7 ? '#ffaa44' : '#ff4444'; }
 
+let solarConnected = false;
+function updateSolarAvailability(quality) {
+    if (!quality) return;
+    const ready = quality.alerting_ready === true;
+    const status = String(quality.status || (ready ? 'ok' : 'unavailable')).toUpperCase();
+    const age = quality.xray?.age_seconds;
+    const ageText = typeof age === 'number' ? (age < 120 ? `${age}s old` : `${Math.round(age / 60)}m old`) : 'no XRS timestamp';
+    const source = quality.xray?.source || 'NOAA SWPC GOES XRS';
+    const freshness = document.getElementById('solar-freshness');
+    if (freshness) {
+        freshness.textContent = `${status} · ${source} · ${ageText}`;
+        freshness.style.color = ready ? (status === 'DEGRADED' ? '#fb4' : '#6b8') : '#f66';
+    }
+    const dot = document.getElementById('solar-conn');
+    if (dot) dot.className = `conn-dot ${solarConnected && ready ? 'live' : 'dead'}`;
+    const label = document.getElementById('solar-status');
+    if (label) label.textContent = ready ? (solarConnected ? '(LIVE)' : '(polling)') : `(${status})`;
+    const panel = document.getElementById('detector-panel');
+    if (panel) panel.style.opacity = ready ? '1' : '0.55';
+    if (!ready) {
+        DET_NAMES.forEach(name => {
+            const bar = document.getElementById(`det-${name}`);
+            const score = document.getElementById(`ds-${name}`);
+            if (bar) bar.style.width = '0%';
+            if (score) score.textContent = '--';
+        });
+        const fusedFill = document.getElementById('fused-fill');
+        const fusedLabel = document.getElementById('fused-label');
+        const agreement = document.getElementById('det-agreement');
+        if (fusedFill) fusedFill.style.width = '0%';
+        if (fusedLabel) fusedLabel.textContent = 'FUSED: unavailable';
+        if (agreement) agreement.textContent = '--';
+        const esc = document.getElementById('esc-state');
+        if (esc) { esc.textContent = 'NO DATA'; esc.className = 'esc-badge esc-quiet'; }
+        const detail = document.getElementById('esc-detail');
+        if (detail) detail.textContent = 'Alerts inhibited until fresh X-ray observations arrive';
+    }
+}
+
 function updDetectors(data) {
     if (!data || data.error) return;
+    const quality = data.data_quality;
+    if (quality) updateSolarAvailability(quality);
+    if (quality && !quality.alerting_ready) return;
     const diag = data.fusion_diagnostics || data;
     const detectors = diag.raw_scores || diag.detectors || [];
     if (Array.isArray(detectors)) {
@@ -2726,6 +2768,9 @@ function updDetectors(data) {
 
 function updEscalation(data) {
     if (!data || data.error) return;
+    if (data.data_quality) updateSolarAvailability(data.data_quality);
+    if (data.data_quality && !data.data_quality.alerting_ready) return;
+    data = data.escalation || data;
     const level = (data.level_label || data.level || data.state || 'quiet').toLowerCase();
     const el = document.getElementById('esc-state');
     if (el) { el.textContent = level.toUpperCase(); el.className = 'esc-badge esc-' + level; }
@@ -2740,6 +2785,16 @@ const PW_COLORS = { forbush: '#6644ff', heep: '#44ffaa', ssc: '#ff44aa', mansuro
 
 function updPathways(data) {
     if (!data || data.error) return;
+    if (data.data_quality) updateSolarAvailability(data.data_quality);
+    if (data.data_quality && !data.data_quality.alerting_ready) {
+        const stressEl = document.getElementById('stress-val');
+        if (stressEl) { stressEl.textContent = '--'; stressEl.style.color = '#778'; }
+        const panel = document.getElementById('pathway-panel');
+        if (panel) panel.style.opacity = '0.55';
+        return;
+    }
+    const panel = document.getElementById('pathway-panel');
+    if (panel) panel.style.opacity = '1';
     const stressor = data.stressor || data;
     const pathways = stressor.pathways || (Array.isArray(data) ? data : []);
     let totalStress = 0;
@@ -2765,35 +2820,62 @@ function updPathways(data) {
 }
 
 // SSE Streams
-let solarConnected = false;
 function connectSSE() {
     try {
         const sse = new EventSource(`${SOLAR_API}/metrics`);
-        sse.onopen = () => { solarConnected = true; const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live'; const st = document.getElementById('solar-status'); if (st) st.textContent = '(LIVE)'; };
-        sse.onmessage = e => { try { const d = JSON.parse(e.data); if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d); if (d.escalation) updEscalation(d.escalation); else if (d.level || d.level_label) updEscalation(d); if (d.stressor?.pathways) updPathways(d.stressor); else if (d.pathways || Array.isArray(d)) updPathways(d); if (d.feeds?.imf_bz != null) updateMagnetosphereCompression(d.feeds.imf_bz); } catch (_) { } };
+        sse.onopen = () => { solarConnected = true; const st = document.getElementById('solar-status'); if (st) st.textContent = '(connected; awaiting data)'; };
+        const handleMetrics = e => { try {
+            const d = JSON.parse(e.data);
+            if (d.data_quality) updateSolarAvailability(d.data_quality);
+            if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d);
+            if (d.escalation) updEscalation({ escalation: d.escalation, data_quality: d.data_quality });
+            else if (d.level || d.level_label) updEscalation(d);
+            if (d.stressor?.pathways) updPathways({ ...d.stressor, data_quality: d.data_quality });
+            else if (d.pathways || Array.isArray(d)) updPathways(d);
+            if (d.bz != null) updateMagnetosphereCompression(d.bz);
+        } catch (_) { } };
+        // Axum emits named "metrics" events; onmessage only receives unnamed events.
+        sse.addEventListener('metrics', handleMetrics);
+        sse.onmessage = handleMetrics;
+        sse.addEventListener('availability', e => { try { const d = JSON.parse(e.data); updateSolarAvailability({ status: 'unavailable', alerting_ready: false, ...d }); } catch (_) { } });
         sse.onerror = () => { solarConnected = false; const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot dead'; const st = document.getElementById('solar-status'); if (st) st.textContent = '(polling)'; };
     } catch (_) { }
     try {
         const alerts = new EventSource(`${SOLAR_API}/alerts`);
-        alerts.onmessage = e => { try { const a = JSON.parse(e.data); const banner = document.getElementById('alert-banner'); if (!banner) return; const type = a.type || a.kind || '', msg = a.message || a.msg || JSON.stringify(a); banner.textContent = `${type.toUpperCase()}: ${msg}`; banner.style.display = 'block'; banner.style.background = type.includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)'; setTimeout(() => { banner.style.display = 'none'; }, 15000); } catch (_) { } };
+        const handleAlert = e => { try {
+            const a = JSON.parse(e.data);
+            if (a.data_status === 'stale' || a.data_status === 'starting' || a.alerting_ready === false) return;
+            const banner = document.getElementById('alert-banner'); if (!banner) return;
+            const type = a.alert_type || a.type || a.kind || 'solar_alert', msg = a.message || a.msg || JSON.stringify(a);
+            banner.textContent = `${String(type).replaceAll('_', ' ').toUpperCase()}: ${msg}`;
+            banner.style.display = 'block';
+            banner.style.background = String(type).includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)';
+            setTimeout(() => { banner.style.display = 'none'; }, 15000);
+        } catch (_) { } };
+        alerts.addEventListener('alert', handleAlert);
+        alerts.onmessage = handleAlert;
     } catch (_) { }
 }
 connectSSE();
 
 async function pollSolar() {
     try {
-        const [statusResp, feedsResp] = await Promise.all([fetch(`${SOLAR_API}/status`), fetch(`${SOLAR_API}/feeds`)]);
+        const [statusResp, feedsResp, healthResp] = await Promise.all([
+            fetch(`${SOLAR_API}/status`),
+            fetch(`${SOLAR_API}/feeds`),
+            fetch(`${SOLAR_API}/health`),
+        ]);
         const status = await statusResp.json();
         const feeds = await feedsResp.json();
-        if (status && !status.error) {
+        const health = await healthResp.json();
+        if (health?.data_quality) updateSolarAvailability(health.data_quality);
+        if (statusResp.ok && status && !status.error) {
             updDetectors(status);
-            if (status.escalation) updEscalation(status.escalation);
-            if (status.stressor) updPathways(status.stressor);
-            if (feeds && !feeds.error) updateSolarWindData(feeds);
+            if (status.escalation) updEscalation({ escalation: status.escalation, data_quality: status.data_quality });
+            if (status.stressor) updPathways({ ...status.stressor, data_quality: status.data_quality });
+            if (feedsResp.ok && feeds && !feeds.error) updateSolarWindData(feeds);
             const protonDet = status.fusion_diagnostics?.raw_scores?.find(d => d.name === 'proton');
             if (protonDet) swProtonScore = protonDet.percentile_rank;
-            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live';
-            const st = document.getElementById('solar-status'); if (st) st.textContent = solarConnected ? '(LIVE)' : '(polling)';
             return;
         }
     } catch (_) { }

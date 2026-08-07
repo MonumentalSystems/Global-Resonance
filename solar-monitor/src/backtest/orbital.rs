@@ -107,7 +107,7 @@ mod tests {
         let i0 = orbital_inputs(jd0);
         let i1 = orbital_inputs(jd1);
         // sin/cos should be similar after one period
-        assert!((i0[0] - i1[0]).abs() < 0.01, "Jupiter sin should repeat");
-        assert!((i0[1] - i1[1]).abs() < 0.01, "Jupiter cos should repeat");
+        assert!((i0[8] - i1[8]).abs() < 0.01, "Jupiter sin should repeat");
+        assert!((i0[9] - i1[9]).abs() < 0.01, "Jupiter cos should repeat");
     }
 }

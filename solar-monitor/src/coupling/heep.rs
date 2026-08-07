@@ -31,6 +31,8 @@ impl HeepPathway {
     pub fn update(&mut self, feeds: &FeedState) {
         if feeds.electrons.is_empty() {
             self.score = 0.0;
+            self.current_flux = 0.0;
+            self.flux_trend = 0.0;
             return;
         }
 
@@ -38,18 +40,18 @@ impl HeepPathway {
         self.current_flux = feeds.electrons.back().map(|s| s.flux).unwrap_or(0.0);
 
         // 6-hour trend: compare current to mean of samples from ~6h ago
-        // At 1-min cadence, 6h = 360 samples
-        let trend_window = 360.min(feeds.electrons.len());
+        // At 5-min cadence, 6h = 72 samples.
+        let trend_window = 72.min(feeds.electrons.len());
         if feeds.electrons.len() > trend_window {
             let old_idx = feeds.electrons.len() - trend_window;
             let old_mean: f64 = feeds
                 .electrons
                 .iter()
                 .skip(old_idx)
-                .take(30)
+                .take(12)
                 .map(|s| s.flux)
                 .sum::<f64>()
-                / 30.0_f64.min(feeds.electrons.len() as f64);
+                / 12.0_f64.min(feeds.electrons.len() as f64);
             if old_mean > 0.0 {
                 self.flux_trend = (self.current_flux - old_mean) / old_mean;
             }
@@ -59,7 +61,7 @@ impl HeepPathway {
         if self.current_flux >= self.threshold {
             // Above threshold: score scales with log of excess
             let excess = self.current_flux / self.threshold;
-            self.score = (excess.log10() / 2.0).min(1.0).max(0.0);
+            self.score = (0.2 + excess.log10() / 2.0).clamp(0.0, 1.0);
 
             // Boost score if trend is rising
             if self.flux_trend > 0.5 {
@@ -83,7 +85,7 @@ impl HeepPathway {
 
         PathwayStatus {
             name: "HEEP".into(),
-            active: self.score > 0.1,
+            active: self.current_flux >= self.threshold,
             score: self.score,
             effect: CouplingEffect::Enhancement,
             lag_hours: (88.8, 96.0), // 3.7-4 days
@@ -95,6 +97,8 @@ impl HeepPathway {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feeds::electrons::ElectronSample;
+    use chrono::Utc;
 
     #[test]
     fn test_quiet_electrons() {
@@ -102,5 +106,33 @@ mod tests {
         let status = p.status();
         assert!(!status.active);
         assert_eq!(status.effect, CouplingEffect::Enhancement);
+    }
+
+    #[test]
+    fn below_threshold_is_not_active() {
+        let mut feeds = FeedState::new();
+        feeds.electrons.push_back(ElectronSample {
+            time_tag: Utc::now(),
+            satellite: 18,
+            flux: 600.0,
+        });
+        let mut pathway = HeepPathway::new();
+        pathway.update(&feeds);
+        assert!(!pathway.status().active);
+    }
+
+    #[test]
+    fn above_threshold_is_active_with_nonzero_score() {
+        let mut feeds = FeedState::new();
+        feeds.electrons.push_back(ElectronSample {
+            time_tag: Utc::now(),
+            satellite: 18,
+            flux: 1100.0,
+        });
+        let mut pathway = HeepPathway::new();
+        pathway.update(&feeds);
+        let status = pathway.status();
+        assert!(status.active);
+        assert!(status.score >= 0.2);
     }
 }

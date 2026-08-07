@@ -69,10 +69,25 @@ impl StressorIndex {
 
     /// Update all pathways with current feed state and any flare onset.
     pub fn update(&mut self, feeds: &FeedState, flare: Option<&FlareOnset>) {
-        self.forbush.update(feeds, flare);
-        self.heep.update(feeds);
-        self.ssc.update(feeds);
-        self.mansurov.update(feeds);
+        let quality = feeds.quality(Utc::now());
+        let mut fresh = feeds.clone();
+        if !quality.electrons.fresh {
+            fresh.electrons.clear();
+        }
+        if !quality.protons.fresh {
+            fresh.protons.clear();
+        }
+        if !quality.solar_wind.fresh {
+            fresh.solar_wind.clear();
+        }
+        if !quality.kp_dst.fresh {
+            fresh.kp_dst.clear();
+        }
+
+        self.forbush.update(&fresh, flare);
+        self.heep.update(&fresh);
+        self.ssc.update(&fresh);
+        self.mansurov.update(&fresh);
         self.lunar.update();
     }
 

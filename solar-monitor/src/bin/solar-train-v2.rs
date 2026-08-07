@@ -6,7 +6,7 @@
 //!
 //! Key diagnostic: watch J converge toward J_c = 2/π ≈ 0.6366.
 
-use crate::models::solar_flare_v2::{SolarFlareV2, SolarFlareV2Config, V2Grads, J_CRITICAL, N_FIELDS, N_ORBITAL, N_INPUT};
+use solar_monitor::models::solar_flare_v2::{SolarFlareV2, SolarFlareV2Config, V2Grads, J_CRITICAL, N_FIELDS, N_ORBITAL, N_INPUT};
 use rayon::prelude::*;
 use solar_monitor::backtest::kp_lookup::KpLookup;
 use solar_monitor::backtest::orbital;

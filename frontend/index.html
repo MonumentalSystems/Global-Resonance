@@ -214,6 +214,7 @@
                 </div>
                 <img id="sun-image" src="" alt="Loading..." style="background:#0a0a1a;">
                 <div class="d" id="esc-detail" style="margin-top:3px;">7-detector rank fusion</div>
+                <div class="d" id="solar-freshness" style="margin-top:2px;color:#778;">Waiting for source timestamps...</div>
             </div>
 
             <!-- X-ray + Order Param side by side -->
@@ -227,7 +228,7 @@
 
             <!-- Detectors -->
             <div class="p" id="detector-panel">
-                <h4>DETECTORS</h4>
+                <h4>FLARE ANOMALY DETECTORS</h4>
                 <div class="det-row"><span class="det-label">Z-Score</span><div class="det-bar-bg"><div class="det-bar" id="det-zscore" style="width:0%"></div></div><span class="det-score" id="ds-zscore">--</span></div>
                 <div class="det-row"><span class="det-label">CUSUM</span><div class="det-bar-bg"><div class="det-bar" id="det-cusum" style="width:0%"></div></div><span class="det-score" id="ds-cusum">--</span></div>
                 <div class="det-row"><span class="det-label">Hard X/Soft</span><div class="det-bar-bg"><div class="det-bar" id="det-hardness" style="width:0%"></div></div><span class="det-score" id="ds-hardness">--</span></div>
@@ -236,7 +237,7 @@
                 <div class="det-row"><span class="det-label">Proton SEP</span><div class="det-bar-bg"><div class="det-bar" id="det-proton" style="width:0%"></div></div><span class="det-score" id="ds-proton">--</span></div>
                 <div class="det-row"><span class="det-label">Criticality</span><div class="det-bar-bg"><div class="det-bar" id="det-criticality" style="width:0%"></div></div><span class="det-score" id="ds-criticality">--</span></div>
                 <div class="fused-bar"><span class="fused-label" id="fused-label">FUSED: --</span><div class="fused-fill" id="fused-fill" style="width:0%"></div></div>
-                <div class="d">Agreement: <span id="det-agreement">--</span>/7</div>
+                <div class="d">Agreement: <span id="det-agreement">--</span>/6 observational</div>
             </div>
         </div>
 
@@ -275,8 +276,9 @@
                 <div class="pw-row"><span class="pw-name">LUNAR</span><div class="pw-bar-bg"><div class="pw-bar" id="pw-lunar" style="width:0%;background:#888"></div></div><span class="pw-dir" id="pwd-lunar">-</span><span class="pw-score" id="pws-lunar">--</span></div>
                 <div class="stress-gauge">
                     <div class="stress-val" id="stress-val">0.00</div>
-                    <div class="stress-label">ATMOSPHERIC STRESS INDEX</div>
+                    <div class="stress-label">EXPERIMENTAL COUPLING INDEX</div>
                 </div>
+                <div class="d">Research indicators only; not an earthquake or weather forecast.</div>
             </div>
 
             <!-- Cosmic Rays (global) -->

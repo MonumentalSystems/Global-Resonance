@@ -13,9 +13,13 @@ else
   START_LOCAL_SOLAR_MONITOR="${START_LOCAL_SOLAR_MONITOR:-0}"
 fi
 
-if [ "${START_LOCAL_SOLAR_MONITOR}" != "0" ] && command -v solar-monitor >/dev/null 2>&1; then
+if [ "${START_LOCAL_SOLAR_MONITOR}" != "0" ]; then
+  if ! command -v solar-monitor >/dev/null 2>&1; then
+    echo "[entrypoint] local solar-monitor requested but binary is missing" >&2
+    exit 1
+  fi
   echo "[entrypoint] starting solar-monitor on 127.0.0.1:${SOLAR_MONITOR_PORT}"
-  solar-monitor --port "${SOLAR_MONITOR_PORT}" --poll-interval "${SOLAR_MONITOR_POLL_INTERVAL}" &
+  solar-monitor --host 127.0.0.1 --port "${SOLAR_MONITOR_PORT}" --poll-interval "${SOLAR_MONITOR_POLL_INTERVAL}" &
   SOLAR_MONITOR_PID="$!"
   trap 'kill "${SOLAR_MONITOR_PID}" 2>/dev/null || true' INT TERM EXIT
 else

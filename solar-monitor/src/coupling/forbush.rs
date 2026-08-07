@@ -99,17 +99,22 @@ impl ForbushPathway {
             self.score = 0.0;
             self.predicted_cr_decrease = 0.0;
         }
+
+        // A flare alone does not establish that an Earth-directed CME occurred
+        // or that a Forbush decrease was observed. Keep the timing context, but
+        // do not contribute to the live coupling index until a measured CME or
+        // cosmic-ray channel is wired into this service.
+        self.score = 0.0;
+        self.predicted_cr_decrease = 0.0;
     }
 
     pub fn status(&self) -> PathwayStatus {
         let details = if let Some(ref flare) = self.last_flare {
             let hours = (Utc::now() - flare.timestamp).num_seconds() as f64 / 3600.0;
             format!(
-                "{}-class flare {:.0}h ago, CME arrival ~{:.0}h, predicted CR decrease {:.1}%",
+                "{}-class flare {:.0}h ago; context only — no measured CME/cosmic-ray confirmation",
                 flare.class.label(),
                 hours,
-                self.cme_arrival_hours,
-                self.predicted_cr_decrease,
             )
         } else {
             "No significant flare activity".into()

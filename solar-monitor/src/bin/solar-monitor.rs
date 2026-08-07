@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower_http::cors::{Any, CorsLayer};
 
 use solar_monitor::server::solar_routes;
@@ -11,6 +11,7 @@ async fn main() {
 
     // Parse args
     let mut port: u16 = 8089;
+    let mut host = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut poll_interval: u64 = 60;
 
     let args: Vec<String> = std::env::args().collect();
@@ -20,6 +21,13 @@ async fn main() {
             "--port" => {
                 i += 1;
                 port = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(8089);
+            }
+            "--host" => {
+                i += 1;
+                host = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
             }
             "--poll-interval" => {
                 i += 1;
@@ -32,6 +40,7 @@ async fn main() {
                 println!();
                 println!("Options:");
                 println!("  --port <PORT>            HTTP port (default: 8089)");
+                println!("  --host <ADDRESS>         Bind address (default: 127.0.0.1)");
                 println!(
                     "  --poll-interval <SECS>   Feed polling interval in seconds (default: 60)"
                 );
@@ -73,7 +82,7 @@ async fn main() {
 
     let app = solar_routes(state).layer(cors);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::new(host, port);
     tracing::info!("Solar monitor listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)

@@ -144,19 +144,17 @@ impl RankFusionDetector {
             criticality: CriticalityDetector::default_detector(),
             score_histories: std::array::from_fn(|_| ScoreHistory::new(500)),
             // Weights optimized for commutator-enhanced 7-detector ensemble.
-            // Rebalanced to reflect B-field integration:
-            // - multichannel upgraded (now 3-channel with B-field decorrelation)
-            // - criticality: primary predictive signal (commutator + loading)
-            // - zscore: still highest reactive selectivity
-            // Normalized to sum to 1.0.
+            // Relative weights for the six observational channels, normalized
+            // after excluding the uncalibrated criticality research diagnostic
+            // from live alert decisions.
             weights: [
-                0.22, // zscore: highest reactive selectivity (8.5x)
-                0.14, // cusum: high selectivity (4.9x), always fires on TP
-                0.14, // hardness: 0.999 on X1.5, clean 1-min cadence
-                0.03, // rate_of_change: low weight, brief spikes
-                0.14, // multichannel: upgraded with B-field decorrelation
-                0.10, // proton: 76x flux increase, 5-min cadence
-                0.23, // criticality: commutator + loading + C×A (predictive)
+                0.285714, // zscore
+                0.181818, // cusum
+                0.181818, // hardness
+                0.038961, // rate_of_change
+                0.181818, // multichannel
+                0.129870, // proton
+                0.0,      // criticality: research diagnostic only
             ],
             fused_score: 0.0,
             percentile_ranks: [0.0; N_DETECTORS],
@@ -424,8 +422,8 @@ impl RankFusionDetector {
         self.fused_score
     }
 
-    /// Raw criticality detector score (0..1) — predictive SHARP-based signal only.
-    /// Use for isolated evaluation of the physics-based predictor.
+    /// Raw criticality detector score (0..1), retained for research evaluation.
+    /// It is excluded from live fusion weighting and detector agreement.
     pub fn criticality_score(&self) -> f64 {
         self.criticality.score()
     }
@@ -461,7 +459,7 @@ impl RankFusionDetector {
             self.proton.score(),
             self.criticality.score(),
         ];
-        scores.iter().filter(|&&s| s > 0.3).count()
+        scores[..6].iter().filter(|&&s| s > 0.3).count()
     }
 
     /// Full diagnostics for the current state.
@@ -547,6 +545,25 @@ mod tests {
         det.ingest(3e-4, 8e-5, 50000.0, 15.0, ts(201));
         assert!(det.detector_agreement() >= 1);
         assert!(det.score() > 0.3);
+    }
+
+    #[test]
+    fn sustained_observed_flare_reaches_live_alert_gate() {
+        let mut det = RankFusionDetector::default_detector();
+        for i in 0..200 {
+            det.ingest(5e-7, 2e-8, 100.0, 0.3, ts(i));
+        }
+        for i in 201..211 {
+            let progress = (i - 200) as f64 / 10.0;
+            let long = 5e-7 + progress * 3e-4;
+            det.ingest(long, long * 0.25, 50_000.0, 15.0, ts(i));
+        }
+        assert!(
+            det.is_anomalous(),
+            "observed flare sequence should cross live gate: score={:.3}, agreement={}",
+            det.score(),
+            det.detector_agreement(),
+        );
     }
 
     #[test]
