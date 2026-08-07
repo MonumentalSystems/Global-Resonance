@@ -380,7 +380,8 @@ function updateCompoundFaultContext(advisories) {
     const source = document.getElementById('compound-fault-source');
     if (!panel || !copy || !source) return;
 
-    const advisory = advisories.find(item => item?.active);
+    const candidates = advisories.filter(item => item?.status === 'PENDING_AUTHORITATIVE_CONFIRMATION');
+    const advisory = candidates[0];
     if (!advisory) {
         panel.style.display = 'none';
         copy.textContent = '';
@@ -388,7 +389,7 @@ function updateCompoundFaultContext(advisories) {
         return;
     }
 
-    const additional = Math.max(0, advisories.filter(item => item?.active).length - 1);
+    const additional = Math.max(0, candidates.length - 1);
     const suffix = additional ? ` (+${additional} additional candidate${additional === 1 ? '' : 's'})` : '';
     copy.textContent = `Candidate ${advisory.trigger_candidate}; monitor ${advisory.target} after authoritative fault attribution${suffix}.`;
     source.href = advisory.source;

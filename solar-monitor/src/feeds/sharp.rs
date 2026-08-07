@@ -349,5 +349,8 @@ mod tests {
         let diagnostic = helicity_interaction_diagnostic(&rec);
         assert_eq!(diagnostic.interaction_proxy, 6e5);
         assert!(!diagnostic.operational_score_modified);
+        let json = serde_json::to_value(&diagnostic).unwrap();
+        assert_eq!(json["source_doi"], "10.3847/2041-8213/ae6cf8");
+        assert_eq!(json["operational_score_modified"], false);
     }
 }

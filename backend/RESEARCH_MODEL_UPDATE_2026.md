@@ -18,10 +18,11 @@ allows lags extending to decades. Erosion, age uncertainty, and alternate
 sedimentary interpretations prevent a calibrated real-time conditional
 probability or universal alert window.
 
-Model decision: `/api/earthquakes` now emits a **monitoring-only** compound
-fault advisory when a ComCat-like event passes a broad great-Cascadia screening
-rule. Magnitude 8, the bounding box, and the 70 km depth ceiling are explicit
-implementation conventions, not fitted results. The advisory requires USGS or
+Model decision: `/api/earthquakes` now emits a **pending-confirmation** compound
+fault candidate when a ComCat-like event passes a broad great-Cascadia screening
+rule. The candidate is not marked active until authoritative attribution exists.
+Magnitude 8, the bounding box, and the 70 km depth ceiling are explicit
+implementation conventions, not fitted results. The candidate requires USGS or
 other authoritative fault attribution and never supplies a probability. Global
 Jelly Ball seismic-zone ratios are unchanged.
 

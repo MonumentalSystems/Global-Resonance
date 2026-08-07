@@ -82,6 +82,9 @@ pub struct SolarMetrics {
     pub solar_wind_speed: Option<f64>,
     pub bz: Option<f64>,
     pub kp: Option<f64>,
+    /// Experimental SHARP helicity interaction, exposed for validation only.
+    /// This value is not used by rank fusion, escalation, or flare probability.
+    pub sharp_helicity_diagnostic: Option<crate::feeds::sharp::HelicityInteractionDiagnostic>,
     /// Fused anomaly score from rank fusion (0..1).
     pub fused_flare_score: f64,
     /// Per-detector diagnostics.
@@ -365,6 +368,15 @@ impl SolarMonitorState {
                         solar_wind_speed: feeds.solar_wind.back().map(|s| s.speed),
                         bz: feeds.solar_wind.back().map(|s| s.bz),
                         kp: feeds.kp_dst.back().map(|s| s.kp),
+                        sharp_helicity_diagnostic: feeds
+                            .sharp
+                            .iter()
+                            .max_by(|a, b| {
+                                crate::feeds::sharp::sharp_flare_risk(a)
+                                    .partial_cmp(&crate::feeds::sharp::sharp_flare_risk(b))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(crate::feeds::sharp::helicity_interaction_diagnostic),
                         fused_flare_score: detector.score(),
                         fusion_diagnostics: diag.clone(),
                         escalation: esc_status.clone(),
