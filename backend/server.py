@@ -1346,7 +1346,9 @@ def get_ocean_currents():
     lon_min, lon_max = -180, 180
 
     try:
-        with httpx.Client(timeout=25) as client:
+        # CoastWatch rejects anonymous/default HTTP clients with 403. Identify
+        # this research dashboard consistently, as the other NOAA feeds do.
+        with httpx.Client(timeout=25, headers={"User-Agent": "GlobalResonance/1.0"}) as client:
             das = client.get(f"{base}.das")
             if das.status_code == 200:
                 for line in das.text.splitlines():
