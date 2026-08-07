@@ -50,26 +50,34 @@ except ImportError:
 
 # ─── IGRF dipole model (fallback) ──────────────────────────────────────
 
+IGRF14_EPOCH_2025 = np.array([-29350.0, -1410.3, 4545.5])
+IGRF14_SV_2025_2030 = np.array([12.6, 10.0, -21.5])
+
+
+def igrf14_degree1_coefficients(year=2025.0):
+    """Return IGRF-14 (g10, g11, h11) with 2025-2030 secular variation.
+
+    IGRF-14 is predictive after epoch 2025.  We clamp this lightweight
+    fallback to its published validity interval rather than extrapolating it.
+    """
+    offset = np.clip(float(year) - 2025.0, 0.0, 5.0)
+    return tuple(IGRF14_EPOCH_2025 + offset * IGRF14_SV_2025_2030)
+
+
 def dipole_field(lat_deg, lon_deg, year=2025.0):
-    """Simple centered dipole. Returns (Bx, By, Bz) in nT (NED frame)."""
+    """IGRF-14 centered tilted-dipole fallback in local NED coordinates."""
     lat = np.radians(lat_deg)
-    # IGRF-13 g10, g11, h11 for 2025
-    g10 = -29405.0  # nT
-    g11 = -1450.0
-    h11 = 4652.0
+    lon = np.radians(lon_deg)
+    theta = np.pi / 2 - lat
+    g10, g11, h11 = igrf14_degree1_coefficients(year)
 
-    # Dipole moment
-    m = np.sqrt(g10**2 + g11**2 + h11**2)
+    horizontal_dipole = g11 * np.cos(lon) + h11 * np.sin(lon)
+    br = 2.0 * (g10 * np.cos(theta) + horizontal_dipole * np.sin(theta))
+    btheta = g10 * np.sin(theta) - horizontal_dipole * np.cos(theta)
+    bphi = g11 * np.sin(lon) - h11 * np.cos(lon)
 
-    # Simplified: just axial dipole
-    Br = -2 * g10 * np.sin(lat)  # radial (= -Bz in NED at surface)
-    Bt = g10 * np.cos(lat)       # theta (= Bx in NED, pointing north)
-
-    Bx = Bt   # North
-    By = 0.0  # East (zero for axial dipole)
-    Bz = -Br  # Down
-
-    return Bx, By, Bz
+    # Geographic north is -theta, east is +phi, and down is -radial.
+    return -btheta, bphi, -br
 
 
 def eval_field(lat, lon, year=2025.0):
