@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 import asyncio
 import os
@@ -2238,14 +2238,35 @@ SOLAR_MONITOR_URL = os.environ.get("SOLAR_MONITOR_URL", "http://localhost:8089")
 
 
 async def _solar_proxy(path: str):
-    """Proxy a GET request to the solar monitor."""
+    """Proxy JSON without disguising upstream failures as HTTP 200."""
     url = f"{SOLAR_MONITOR_URL}/api/solar/{path}"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url)
-            return resp.json()
-    except Exception as e:
-        return {"error": str(e), "source": url}
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {
+                    "error": "solar monitor returned a non-JSON response",
+                    "source": url,
+                    "upstream_status": resp.status_code,
+                }
+            return JSONResponse(
+                content=payload,
+                status_code=resp.status_code,
+                headers={"X-Data-Source": "solar-monitor"},
+            )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "solar monitor unavailable",
+                "detail": str(exc),
+                "source": url,
+                "alerting_ready": False,
+            },
+            headers={"X-Data-Source": "solar-monitor"},
+        )
 
 
 @app.get("/api/solar/status")
@@ -2302,15 +2323,27 @@ async def _sse_proxy(path: str):
 
     async def event_generator():
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
+            timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("GET", url) as resp:
-                    async for line in resp.aiter_lines():
-                        yield line + "\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                    if resp.status_code >= 400:
+                        yield (
+                            "event: availability\n"
+                            f"data: {json.dumps({'error': 'solar monitor stream unavailable', 'upstream_status': resp.status_code, 'source': url, 'alerting_ready': False})}\n\n"
+                        )
+                        return
+                    # Forward decoded chunks so named-event framing and blank-line
+                    # boundaries survive the proxy unchanged.
+                    async for chunk in resp.aiter_text():
+                        yield chunk
+        except httpx.HTTPError as exc:
+            yield (
+                "event: availability\n"
+                f"data: {json.dumps({'error': str(exc), 'source': url, 'alerting_ready': False})}\n\n"
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/solar/metrics")

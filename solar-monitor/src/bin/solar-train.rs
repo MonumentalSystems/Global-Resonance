@@ -13,7 +13,7 @@
 //!
 //! Evaluates TSS, BACC, F1, Brier Score on held-out test set each epoch.
 
-use crate::models::solar_flare::{SolarFlareConfig, SolarFlareGrads, SolarFlareModel};
+use solar_monitor::models::solar_flare::{SolarFlareConfig, SolarFlareGrads, SolarFlareModel};
 use rayon::prelude::*;
 use solar_monitor::backtest::sharp_dataset::{
     brier_score, brier_skill_score, shuffle, ClassificationMetrics, DatasetConfig, SharpDataset,
@@ -414,8 +414,8 @@ fn evaluate(
 
 /// Element-wise add `src` gradients into `dst`.
 fn add_grads(
-    dst: &mut crate::models::solar_flare::SolarFlareGrads,
-    src: &crate::models::solar_flare::SolarFlareGrads,
+    dst: &mut solar_monitor::models::solar_flare::SolarFlareGrads,
+    src: &solar_monitor::models::solar_flare::SolarFlareGrads,
 ) {
     fn add_vecs(a: &mut [f32], b: &[f32]) {
         for (x, y) in a.iter_mut().zip(b.iter()) {
@@ -433,7 +433,7 @@ fn add_grads(
 }
 
 /// Scale all gradient components by `s` (for averaging over batch).
-fn scale_grads(g: &mut crate::models::solar_flare::SolarFlareGrads, s: f32) {
+fn scale_grads(g: &mut solar_monitor::models::solar_flare::SolarFlareGrads, s: f32) {
     fn scale_vec(v: &mut [f32], s: f32) {
         for x in v.iter_mut() {
             *x *= s;

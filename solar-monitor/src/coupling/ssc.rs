@@ -34,6 +34,9 @@ impl SscPathway {
     pub fn update(&mut self, feeds: &FeedState) {
         if feeds.solar_wind.len() < 2 {
             self.score = 0.0;
+            self.db_dt_proxy = 0.0;
+            self.southward_imf = false;
+            self.speed_jump = 0.0;
             return;
         }
 

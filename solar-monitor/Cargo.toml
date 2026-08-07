@@ -111,14 +111,22 @@ path = "src/bin/solar-fp-analysis.rs"
 [[bin]]
 name = "solar-train"
 path = "src/bin/solar-train.rs"
+required-features = ["ml-models"]
 
 [[bin]]
 name = "solar-eval"
 path = "src/bin/solar-eval.rs"
+required-features = ["ml-models"]
 
 [[bin]]
 name = "solar-train-v2"
 path = "src/bin/solar-train-v2.rs"
+required-features = ["ml-models"]
+
+[[bin]]
+name = "solar-train-v2-stream"
+path = "src/bin/solar-train-v2-stream.rs"
+required-features = ["ml-models"]
 
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }

@@ -1011,7 +1011,7 @@ mod tests {
         let event = FlareEvent {
             start_time: "2024-01-01T00:00:00Z".to_string(),
             class: "M1.5".to_string(),
-            noaa_ar: 13500,
+            noaa_ar: 13500.0,
         };
         assert!(event.is_c5_or_above());
         assert!((event.peak_flux().unwrap() - 1.5e-5).abs() < 1e-7);
@@ -1019,7 +1019,7 @@ mod tests {
         let quiet = FlareEvent {
             start_time: "2024-01-01T00:00:00Z".to_string(),
             class: "B5.0".to_string(),
-            noaa_ar: 13500,
+            noaa_ar: 13500.0,
         };
         assert!(!quiet.is_c5_or_above());
     }
@@ -1033,7 +1033,9 @@ mod tests {
         let norm = NormStats::from_data(&data);
         assert!((norm.normalize(0, 1.0)).abs() < 1e-6); // min → 0
         assert!((norm.normalize(0, 10.0) - 1.0).abs() < 1e-6); // max → 1
-        assert!((norm.normalize(0, 5.5) - 0.5).abs() < 1e-6); // mid → 0.5
+        // Field 0 is log-transformed, so use the midpoint in transformed space.
+        let transformed_mid = (2.0_f64 * 11.0).sqrt() - 1.0;
+        assert!((norm.normalize(0, transformed_mid) - 0.5).abs() < 1e-6);
     }
 }
 

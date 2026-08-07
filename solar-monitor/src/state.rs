@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-use crate::coupling::StressorIndex;
-use crate::detection::escalation::{EscalationMonitor, EscalationStatus, EscalationTransition};
+use crate::coupling::{StressorIndex, StressorScore};
+use crate::detection::escalation::{EscalationMonitor, EscalationStatus};
 use crate::detection::rank_fusion::{FusionDiagnostics, RankFusionDetector};
-use crate::feeds::FeedState;
+use crate::feeds::{FeedQuality, FeedState};
 use crate::persistence::{LiveLogger, LiveRecord};
 
 /// Configuration for the solar monitor.
@@ -48,6 +48,8 @@ pub struct SolarMonitorState {
     pub alert_tx: broadcast::Sender<SolarAlert>,
     pub metrics_tx: broadcast::Sender<SolarMetrics>,
     pub logger: Arc<Mutex<LiveLogger>>,
+    last_detector_observation: Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+    detector_alert_active: Arc<Mutex<bool>>,
 }
 
 /// Alert event broadcast via SSE.
@@ -57,11 +59,15 @@ pub struct SolarAlert {
     pub message: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub severity: f64,
-    /// Number of detectors agreeing on anomaly (0-6).
+    /// Number of observational detectors agreeing on anomaly (0-6).
     pub detector_agreement: usize,
+    pub source: &'static str,
+    pub observation_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub data_status: &'static str,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AlertType {
     /// Escalation level changed (Quiet → Elevated → Active → Flare).
     Escalation,
@@ -83,13 +89,15 @@ pub struct SolarMetrics {
     pub bz: Option<f64>,
     pub kp: Option<f64>,
     /// Fused anomaly score from rank fusion (0..1).
-    pub fused_flare_score: f64,
+    pub fused_flare_score: Option<f64>,
     /// Per-detector diagnostics.
     pub fusion_diagnostics: FusionDiagnostics,
     /// Current escalation level and status.
     pub escalation: EscalationStatus,
     pub stressor_total: f64,
     pub pathway_scores: Vec<f64>,
+    pub stressor: StressorScore,
+    pub data_quality: FeedQuality,
 }
 
 impl SolarMonitorState {
@@ -109,6 +117,8 @@ impl SolarMonitorState {
             alert_tx,
             metrics_tx,
             logger: Arc::new(Mutex::new(logger)),
+            last_detector_observation: Arc::new(Mutex::new(None)),
+            detector_alert_active: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -137,10 +147,22 @@ impl SolarMonitorState {
                     crate::feeds::sharp::fetch_latest(&client),
                 );
 
+                let any_observations = xray_res
+                    .as_ref()
+                    .map(|both| !both.long.is_empty())
+                    .unwrap_or(false)
+                    || electron_res.as_ref().map(|v| !v.is_empty()).unwrap_or(false)
+                    || proton_res.as_ref().map(|v| !v.is_empty()).unwrap_or(false)
+                    || sw_res.as_ref().map(|v| !v.is_empty()).unwrap_or(false)
+                    || kp_res.as_ref().map(|v| !v.is_empty()).unwrap_or(false)
+                    || sharp_res.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+
                 // Update feed state
                 {
                     let mut feeds = state.feeds.write().await;
                     feeds.errors.clear();
+                    let poll_time = chrono::Utc::now();
+                    feeds.last_poll = Some(poll_time);
 
                     match xray_res {
                         Ok(both) => {
@@ -193,13 +215,26 @@ impl SolarMonitorState {
                         }
                     }
 
-                    feeds.last_update = Some(chrono::Utc::now());
+                    if any_observations {
+                        feeds.last_update = Some(poll_time);
+                    }
                 }
 
-                // Run rank-fused anomaly detection with all channels
-                let flare_onset = {
+                // Process each fresh XRS observation exactly once. Replaying the
+                // cached tail changes detector history without new evidence.
+                let processed_observation = {
                     let feeds = state.feeds.read().await;
                     let mut detector = state.detector.write().await;
+                    let quality = feeds.quality(chrono::Utc::now());
+                    let latest_time = feeds.xray.back().map(|sample| sample.time_tag);
+                    let mut last_processed = state.last_detector_observation.lock().await;
+                    let should_process = quality.alerting_ready
+                        && latest_time.is_some()
+                        && latest_time != *last_processed;
+
+                    if !should_process {
+                        false
+                    } else {
 
                     let xray_long = feeds.xray.back().map(|s| s.flux).unwrap_or(0.0);
                     let xray_short = feeds
@@ -280,11 +315,30 @@ impl SolarMonitorState {
                         }
                     }
 
-                    detector.onset_event()
+                        *last_processed = latest_time;
+                        true
+                    }
+                };
+
+                // Alert only on the false -> true edge. A sustained detector state
+                // remains visible in status but does not spam identical SSE alerts.
+                let flare_onset = if processed_observation {
+                    let detector = state.detector.read().await;
+                    let is_alert = detector.is_anomalous();
+                    let mut was_alert = state.detector_alert_active.lock().await;
+                    let onset = if is_alert && !*was_alert {
+                        detector.onset_event()
+                    } else {
+                        None
+                    };
+                    *was_alert = is_alert;
+                    onset
+                } else {
+                    None
                 };
 
                 // Update escalation monitor
-                {
+                if processed_observation {
                     let feeds = state.feeds.read().await;
                     let detector = state.detector.read().await;
                     let mut esc = state.escalation.write().await;
@@ -294,6 +348,7 @@ impl SolarMonitorState {
                     let agreement = detector.detector_agreement();
                     let xray_flux = feeds.xray.back().map(|s| s.flux).unwrap_or(0.0);
                     let criticality_score = detector.criticality.score();
+                    let quality = feeds.quality(now);
 
                     if let Some(transition) = esc.update_full(
                         hardness_score,
@@ -315,20 +370,24 @@ impl SolarMonitorState {
                             timestamp: transition.timestamp,
                             severity,
                             detector_agreement: agreement,
+                            source: "NOAA SWPC GOES XRS + rank-fusion detector",
+                            observation_time: feeds.xray.back().map(|sample| sample.time_tag),
+                            data_status: quality.status,
                         });
                     }
                 }
 
                 // Emit flare alert if fused detector triggers
                 if let Some(ref onset) = flare_onset {
-                    let agreement = {
+                    let (agreement, quality) = {
                         let detector = state.detector.read().await;
-                        detector.detector_agreement()
+                        let feeds = state.feeds.read().await;
+                        (detector.detector_agreement(), feeds.quality(chrono::Utc::now()))
                     };
                     let _ = state.alert_tx.send(SolarAlert {
                         alert_type: AlertType::FlareOnset,
                         message: format!(
-                            "{}-class flare detected (fused score {:.2}, {}/6 detectors agree), flux {:.2e} W/m²",
+                            "{}-class flare detected (fused score {:.2}, {}/6 observational detectors agree), flux {:.2e} W/m²",
                             onset.class.label(),
                             onset.anomaly_score,
                             agreement,
@@ -337,6 +396,9 @@ impl SolarMonitorState {
                         timestamp: onset.timestamp,
                         severity: onset.anomaly_score,
                         detector_agreement: agreement,
+                        source: "NOAA SWPC GOES XRS + rank-fusion detector",
+                        observation_time: Some(onset.timestamp),
+                        data_status: quality.status,
                     });
                 }
 
@@ -357,6 +419,7 @@ impl SolarMonitorState {
                     let score = stressor.compute();
                     let diag = detector.diagnostics();
                     let esc_status = esc.status(now);
+                    let quality = feeds.quality(now);
 
                     let metrics = SolarMetrics {
                         timestamp: now,
@@ -365,11 +428,13 @@ impl SolarMonitorState {
                         solar_wind_speed: feeds.solar_wind.back().map(|s| s.speed),
                         bz: feeds.solar_wind.back().map(|s| s.bz),
                         kp: feeds.kp_dst.back().map(|s| s.kp),
-                        fused_flare_score: detector.score(),
+                        fused_flare_score: quality.alerting_ready.then(|| detector.score()),
                         fusion_diagnostics: diag.clone(),
                         escalation: esc_status.clone(),
                         stressor_total: score.total,
                         pathway_scores: score.pathways.iter().map(|p| p.score).collect(),
+                        stressor: score,
+                        data_quality: quality,
                     };
 
                     let _ = state.metrics_tx.send(metrics);
