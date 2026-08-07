@@ -2630,9 +2630,14 @@ function updDetectors(data) {
         detectors.forEach(d => {
             const name = (d.name || '').toLowerCase().replace(/[_\s-]/g, '');
             const matchName = DET_NAMES.find(n => name.includes(n)) || name;
-            const val = d.percentile_rank ?? d.score ?? d.raw_score ?? null;
             const bar = document.getElementById(`det-${matchName}`);
             const scoreEl = document.getElementById(`ds-${matchName}`);
+            if (d.available === false) {
+                if (bar) bar.style.width = '0%';
+                if (scoreEl) scoreEl.textContent = '--';
+                return;
+            }
+            const val = d.percentile_rank ?? d.score ?? d.raw_score ?? null;
             if (bar && val != null) { bar.style.width = Math.min(100, val * 100) + '%'; bar.style.background = scoreColor(val); }
             if (scoreEl && val != null) scoreEl.textContent = val.toFixed(2);
         });

@@ -145,11 +145,16 @@ impl FeedFreshness {
 #[derive(Debug, Clone, Serialize)]
 pub struct FeedQuality {
     pub status: &'static str,
+    pub feed_ready: bool,
     pub alerting_ready: bool,
+    pub detector_ready: bool,
+    pub detector_samples: usize,
+    pub detector_samples_required: usize,
     pub evaluated_at: DateTime<Utc>,
     pub last_poll: Option<DateTime<Utc>>,
     pub last_successful_fetch: Option<DateTime<Utc>>,
     pub xray: FeedFreshness,
+    pub xray_short: FeedFreshness,
     pub electrons: FeedFreshness,
     pub protons: FeedFreshness,
     pub solar_wind: FeedFreshness,
@@ -165,6 +170,13 @@ impl FeedState {
             self.xray.back().map(|sample| sample.time_tag),
             5 * 60,
             self.xray.len(),
+            now,
+        );
+        let xray_short = FeedFreshness::new(
+            "NOAA SWPC GOES XRS short channel",
+            self.xray_short.back().map(|sample| sample.time_tag),
+            5 * 60,
+            self.xray_short.len(),
             now,
         );
         let electrons = FeedFreshness::new(
@@ -205,11 +217,11 @@ impl FeedState {
 
         // XRS is the primary channel for flare detection. Other channels improve
         // fidelity but their absence must be described as degraded, not fabricated.
-        let alerting_ready = xray.fresh;
+        let feed_ready = xray.fresh;
         let optional_fresh = electrons.fresh && protons.fresh && solar_wind.fresh && kp_dst.fresh;
-        let status = if alerting_ready && optional_fresh {
+        let status = if feed_ready && optional_fresh {
             "ok"
-        } else if alerting_ready {
+        } else if feed_ready {
             "degraded"
         } else if xray.sample_count == 0 {
             "starting"
@@ -219,17 +231,35 @@ impl FeedState {
 
         FeedQuality {
             status,
-            alerting_ready,
+            feed_ready,
+            alerting_ready: false,
+            detector_ready: false,
+            detector_samples: 0,
+            detector_samples_required: 0,
             evaluated_at: now,
             last_poll: self.last_poll,
             last_successful_fetch: self.last_update,
             xray,
+            xray_short,
             electrons,
             protons,
             solar_wind,
             kp_dst,
             sharp,
         }
+    }
+}
+
+impl FeedQuality {
+    pub fn with_detector_samples(mut self, samples: usize, required: usize) -> Self {
+        self.detector_samples = samples;
+        self.detector_samples_required = required;
+        self.detector_ready = samples >= required;
+        self.alerting_ready = self.feed_ready && self.detector_ready;
+        if self.feed_ready && !self.detector_ready {
+            self.status = "warming_up";
+        }
+        self
     }
 }
 
@@ -270,7 +300,7 @@ mod tests {
 
         let quality = feeds.quality(now);
         assert_eq!(quality.status, "stale");
-        assert!(!quality.alerting_ready);
+        assert!(!quality.feed_ready);
         assert_eq!(quality.xray.age_seconds, Some(30 * 60));
     }
 
@@ -287,6 +317,9 @@ mod tests {
 
         let quality = feeds.quality(now);
         assert_eq!(quality.status, "degraded");
-        assert!(quality.alerting_ready);
+        assert!(quality.feed_ready);
+        assert!(!quality.alerting_ready);
+        let ready = quality.with_detector_samples(200, 200);
+        assert!(ready.alerting_ready);
     }
 }

@@ -60,10 +60,11 @@ COPY frontend/assets/bronze_age_field.json ./frontend/assets/bronze_age_field.js
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${PORT}/api/plates" || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT}/api/plates" >/dev/null \
+      && curl -fsS "http://127.0.0.1:${PORT}/api/solar/live" >/dev/null || exit 1
 
 # server.py lives in backend/ and reads data/ + frontend/dist relative to its parent
 WORKDIR /app/backend
 RUN chmod +x entrypoint.sh
-# Refreshes cosmic-ray cache from NMDB on boot, then starts uvicorn
+# Refreshes cosmic-ray cache from NMDB, then supervises Rust + uvicorn
 CMD ["./entrypoint.sh"]
