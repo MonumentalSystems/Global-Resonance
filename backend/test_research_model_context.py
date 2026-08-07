@@ -20,6 +20,8 @@ class CascadiaCompoundHazardTests(unittest.TestCase):
         self.assertTrue(is_great_cascadia_candidate(event))
         advisory = cascadia_nsaf_advisories([event])[0]
         self.assertEqual(advisory["target"], "northern San Andreas fault")
+        self.assertFalse(advisory["active"])
+        self.assertEqual(advisory["status"], "PENDING_AUTHORITATIVE_CONFIRMATION")
         self.assertIsNone(advisory["probability"])
         self.assertIsNone(advisory["timing_window"])
 

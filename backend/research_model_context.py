@@ -124,7 +124,7 @@ def is_great_cascadia_candidate(event: Mapping) -> bool:
 
 
 def cascadia_nsaf_advisories(events: Iterable[Mapping]) -> list[dict]:
-    """Return monitoring-only compound-hazard advisories for candidate events."""
+    """Return pending-confirmation compound-hazard context for candidates."""
 
     advisories = []
     for event in events:
@@ -132,8 +132,9 @@ def cascadia_nsaf_advisories(events: Iterable[Mapping]) -> list[dict]:
             continue
         advisories.append(
             {
-                "active": True,
-                "level": "MONITORING ESCALATION",
+                "active": False,
+                "status": "PENDING_AUTHORITATIVE_CONFIRMATION",
+                "level": "RESEARCH CANDIDATE",
                 "trigger_event_id": event.get("id", ""),
                 "trigger_candidate": "great Cascadia megathrust earthquake",
                 "target": "northern San Andreas fault",
