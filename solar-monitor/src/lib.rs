@@ -2,8 +2,6 @@ pub mod backtest;
 pub mod coupling;
 pub mod detection;
 pub mod feeds;
-#[cfg(feature = "ml-models")]
-pub mod models;
 pub mod persistence;
 pub mod server;
 pub mod solar_state;

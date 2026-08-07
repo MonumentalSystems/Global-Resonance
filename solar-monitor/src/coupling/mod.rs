@@ -124,11 +124,43 @@ impl StressorIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn test_stressor_index_default() {
         let idx = StressorIndex::new();
         let score = idx.compute();
         assert_eq!(score.pathways.len(), 5);
+    }
+
+    #[test]
+    fn stale_auxiliary_observations_are_neutralized() {
+        let stale = Utc::now() - Duration::hours(8);
+        let mut feeds = FeedState::new();
+        feeds
+            .electrons
+            .push_back(crate::feeds::electrons::ElectronSample {
+                time_tag: stale,
+                satellite: 18,
+                flux: 50_000.0,
+            });
+        for minute in 0..61 {
+            feeds
+                .solar_wind
+                .push_back(crate::feeds::solar_wind::SolarWindSample {
+                    time_tag: stale + Duration::minutes(minute),
+                    speed: if minute == 60 { 900.0 } else { 300.0 },
+                    density: 20.0,
+                    bx: 0.0,
+                    by: 8.0,
+                    bz: -20.0,
+                });
+        }
+
+        let mut idx = StressorIndex::new();
+        idx.update(&feeds, None);
+        assert_eq!(idx.heep.status().score, 0.0);
+        assert_eq!(idx.ssc.status().score, 0.0);
+        assert_eq!(idx.mansurov.status().score, 0.0);
     }
 }

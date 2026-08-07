@@ -30,6 +30,7 @@ pub fn solar_routes(state: SolarMonitorState) -> Router {
         .route("/api/solar/alerts", get(sse_alerts))
         .route("/api/solar/metrics", get(sse_metrics))
         .route("/api/solar/health", get(get_health))
+        .route("/api/solar/live", get(get_live))
         .route("/api/solar/state", get(get_solar_state))
         .route("/api/solar/config", post(post_config))
         .with_state(state)
@@ -37,8 +38,7 @@ pub fn solar_routes(state: SolarMonitorState) -> Router {
 
 /// GET /api/solar/status — Current stressor index + all pathway scores.
 async fn get_status(State(state): State<SolarMonitorState>) -> impl IntoResponse {
-    let feeds = state.feeds.read().await;
-    let quality = feeds.quality(chrono::Utc::now());
+    let quality = state.quality().await;
     let stressor = state.stressor.read().await;
     let score = stressor.compute();
     let detector = state.detector.read().await;
@@ -67,17 +67,18 @@ async fn get_status(State(state): State<SolarMonitorState>) -> impl IntoResponse
 
 /// GET /api/solar/escalation — Current escalation level and precursor status.
 async fn get_escalation(State(state): State<SolarMonitorState>) -> impl IntoResponse {
+    let quality = state.quality().await;
     let esc = state.escalation.read().await;
-    let feeds = state.feeds.read().await;
     let now = chrono::Utc::now();
     Json(serde_json::json!({
         "escalation": esc.status(now),
-        "data_quality": feeds.quality(now),
+        "data_quality": quality,
     }))
 }
 
 /// GET /api/solar/feeds — Latest values from all feeds.
 async fn get_feeds(State(state): State<SolarMonitorState>) -> impl IntoResponse {
+    let quality = state.quality().await;
     let feeds = state.feeds.read().await;
     Json(serde_json::json!({
         "last_update": feeds.last_update,
@@ -91,7 +92,7 @@ async fn get_feeds(State(state): State<SolarMonitorState>) -> impl IntoResponse 
         "solar_wind_latest": feeds.solar_wind.back(),
         "kp_dst_latest": feeds.kp_dst.back(),
         "errors": feeds.errors,
-        "data_quality": feeds.quality(chrono::Utc::now()),
+        "data_quality": quality,
     }))
 }
 
@@ -133,22 +134,21 @@ async fn get_kp_dst(State(state): State<SolarMonitorState>) -> impl IntoResponse
 
 /// GET /api/solar/pathways — All 5 pathway statuses.
 async fn get_pathways(State(state): State<SolarMonitorState>) -> impl IntoResponse {
+    let quality = state.quality().await;
     let stressor = state.stressor.read().await;
     let score = stressor.compute();
-    let feeds = state.feeds.read().await;
     Json(serde_json::json!({
         "pathways": score.pathways,
         "total": score.total,
         "timestamp": score.timestamp,
-        "data_quality": feeds.quality(chrono::Utc::now()),
+        "data_quality": quality,
     }))
 }
 
-/// GET /api/solar/detectors — Rank fusion diagnostics (all 5 detectors + fused score).
+/// GET /api/solar/detectors — Rank fusion diagnostics (7 detectors + fused score).
 async fn get_detectors(State(state): State<SolarMonitorState>) -> impl IntoResponse {
+    let quality = state.quality().await;
     let detector = state.detector.read().await;
-    let feeds = state.feeds.read().await;
-    let quality = feeds.quality(chrono::Utc::now());
     Json(serde_json::json!({
         "fusion_diagnostics": detector.diagnostics(),
         "alerting_ready": quality.alerting_ready,
@@ -190,23 +190,34 @@ async fn sse_metrics(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-/// GET /api/solar/health — Feed freshness check.
+/// GET /api/solar/health — Feed freshness and detector warmup readiness.
 async fn get_health(State(state): State<SolarMonitorState>) -> impl IntoResponse {
+    let quality = state.quality().await;
     let feeds = state.feeds.read().await;
-    let now = chrono::Utc::now();
-    let quality = feeds.quality(now);
     let status_code = if quality.alerting_ready {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    (status_code, Json(serde_json::json!({
-        "status": quality.status,
-        "alerting_ready": quality.alerting_ready,
-        "data_quality": quality,
-        "errors": feeds.errors,
-    })))
+    (
+        status_code,
+        Json(serde_json::json!({
+            "status": quality.status,
+            "alerting_ready": quality.alerting_ready,
+            "data_quality": quality,
+            "errors": feeds.errors,
+        })),
+    )
+}
+
+/// Process liveness only. This must not depend on external NOAA availability.
+async fn get_live() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "solar-monitor",
+        "timestamp": chrono::Utc::now(),
+    }))
 }
 
 /// GET /api/solar/state — Complete solar state snapshot (all layers).
@@ -247,8 +258,11 @@ async fn post_config(
     let mut stressor = state.stressor.write().await;
     stressor.weights = new_config.pathway_weights;
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "updated",
-        "config": new_config,
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "updated",
+            "config": new_config,
+        })),
+    )
 }

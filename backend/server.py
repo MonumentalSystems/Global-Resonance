@@ -2307,8 +2307,14 @@ async def solar_feed(feed_name: str):
 
 @app.get("/api/solar/health")
 async def solar_health():
-    """Feed freshness check."""
+    """Alert readiness: fresh XRS plus detector warmup."""
     return await _solar_proxy("health")
+
+
+@app.get("/api/solar/live")
+async def solar_live():
+    """Solar-monitor process liveness, independent of upstream freshness."""
+    return await _solar_proxy("live")
 
 
 @app.get("/api/solar/state")

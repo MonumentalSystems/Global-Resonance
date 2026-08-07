@@ -1377,7 +1377,6 @@ dependencies = [
  "critical-learning",
  "csv",
  "flate2",
- "harmonic-core",
  "rayon",
  "reqwest",
  "serde",

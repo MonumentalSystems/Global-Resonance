@@ -22,8 +22,6 @@ use chrono::{DateTime, Utc};
 use critical_learning::{
     CouplingTopology, CriticalLearningConfig, CriticalLearningModel, CriticalStepStats, J_CRITICAL,
 };
-#[cfg(feature = "ml-models")]
-use crate::models::solar_flare::{SolarFlareModel, N_SHARP_FIELDS};
 use serde::Serialize;
 use std::collections::VecDeque;
 
@@ -220,15 +218,9 @@ pub struct CriticalityDetector {
     /// Multiplies the raw criticality score by a factor in [0.5, 1.5].
     planetary_kan: Option<super::planetary_kan::PlanetaryKAN>,
 
-    // --- ML scoring (optional, loaded from checkpoint) ---
-    /// Trained SolarFlareModel for manifold-native ML scoring.
-    /// When present, `compute_score_ml()` runs the model on the SHARP buffer.
-    /// Only built with the `ml-models` feature (needs upstream harmonic-core).
-    #[cfg(feature = "ml-models")]
-    ml_model: Option<SolarFlareModel>,
-    /// Min-max normalization stats for ML model input.
-    ml_norm: Option<crate::backtest::sharp_dataset::NormStats>,
-    /// Last ML score (cached, updated when SHARP buffer advances).
+    // The archived experimental ML implementation is deliberately not part of
+    // the production crate: its original harmonic-core dependency is incomplete.
+    /// Reserved diagnostic field; remains zero without a validated model runtime.
     ml_score: f64,
 }
 
@@ -341,9 +333,6 @@ impl CriticalityDetector {
             threshold,
             score_weights: [0.25, 0.20, 0.25, 0.20, 0.10], // default tuned weights
             planetary_kan: None,
-            #[cfg(feature = "ml-models")]
-            ml_model: None,
-            ml_norm: None,
             ml_score: 0.0,
         }
     }
@@ -441,84 +430,12 @@ impl CriticalityDetector {
             threshold,
             score_weights: [0.25, 0.20, 0.25, 0.20, 0.10],
             planetary_kan: None,
-            #[cfg(feature = "ml-models")]
-            ml_model: None,
-            ml_norm: None,
             ml_score: 0.0,
         }
     }
 
-    /// Load a trained SolarFlareModel checkpoint for ML scoring.
-    ///
-    /// Once loaded, `compute_score_ml()` returns model predictions alongside
-    /// the physics-based v7 score. The ML score can be used in rank fusion.
-    #[cfg(feature = "ml-models")]
-    pub fn load_ml_model(
-        &mut self,
-        model_path: &std::path::Path,
-        norm_path: &std::path::Path,
-    ) -> Result<(), String> {
-        let model = SolarFlareModel::load_checkpoint(model_path)
-            .map_err(|e| format!("Failed to load ML model: {e}"))?;
-        let norm_json = std::fs::read_to_string(norm_path)
-            .map_err(|e| format!("Failed to read norm stats: {e}"))?;
-        let norm: crate::backtest::sharp_dataset::NormStats = serde_json::from_str(&norm_json)
-            .map_err(|e| format!("Failed to parse norm stats: {e}"))?;
-        self.ml_model = Some(model);
-        self.ml_norm = Some(norm);
-        Ok(())
-    }
-
-    /// Compute ML-based flare probability from the SHARP buffer.
-    ///
-    /// Feeds the last `seq_len` SHARP snapshots through the trained
-    /// SolarFlareModel. Returns P(flare ≥ C5.0 within prediction window).
-    /// Returns 0.0 if no model loaded or insufficient data.
-    #[cfg(feature = "ml-models")]
-    pub fn compute_score_ml(&mut self) -> f64 {
-        let (model, norm) = match (&self.ml_model, &self.ml_norm) {
-            (Some(m), Some(n)) => (m, n),
-            _ => return 0.0,
-        };
-
-        let seq_len = model.config.seq_len;
-        if self.sharp_buffer.len() < seq_len {
-            return 0.0;
-        }
-
-        // Take the last seq_len SHARP snapshots from the buffer.
-        // Buffer order: [totpot, r_value, totusjh, shrgt45, meangbz, usflux, absnjzh, totusjz, area_acr]
-        // Model order:  [totusjh, totusjz, usflux, meanalp, r_value, totpot, savncpp, area_acr, absnjzh]
-        let start = self.sharp_buffer.len() - seq_len;
-        let mut features = Vec::with_capacity(seq_len * N_SHARP_FIELDS);
-
-        for i in start..self.sharp_buffer.len() {
-            let buf = &self.sharp_buffer[i];
-            // Map buffer indices to model field order.
-            // Buffer: [totpot(0), r_value(1), totusjh(2), shrgt45(3), meangbz(4),
-            //          usflux(5), absnjzh(6), totusjz(7), area_acr(8), meanalp(9), savncpp(10)]
-            // Model:  [totusjh, totusjz, usflux, meanalp, r_value, totpot, savncpp, area_acr, absnjzh]
-            let row = [
-                buf[2],  // TOTUSJH
-                buf[7],  // TOTUSJZ
-                buf[5],  // USFLUX
-                buf[9],  // MEANALP  (now stored in buffer)
-                buf[1],  // R_VALUE
-                buf[0],  // TOTPOT
-                buf[10], // SAVNCPP  (now stored in buffer)
-                buf[8],  // AREA_ACR
-                buf[6],  // ABSNJZH
-            ];
-            let normed = norm.normalize_row(&row);
-            features.extend_from_slice(&normed);
-        }
-
-        let (prob, _) = model.forward(&features);
-        self.ml_score = prob as f64;
-        self.ml_score
-    }
-
-    /// Get the cached ML score from the last `compute_score_ml()` call.
+    /// Get the ML score. The production surface does not load an experimental
+    /// model, so this remains zero until a validated implementation replaces it.
     pub fn ml_score(&self) -> f64 {
         self.ml_score
     }
