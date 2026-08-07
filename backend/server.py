@@ -138,9 +138,10 @@ def lunar_phase(dt=None):
     ref = datetime(2000, 1, 6, tzinfo=timezone.utc)
     days = (dt - ref).total_seconds() / 86400
     phase = (days % 29.53059) / 29.53059
+    illumination = (1 - math.cos(2 * math.pi * phase)) * 50
     return {
         "phase": round(phase, 4),
-        "illumination": round(phase * 100, 1),
+        "illumination": round(illumination, 1),
         "tidal_force": round(math.cos(2 * math.pi * phase), 4),
         "tidal_rate": round(-math.sin(2 * math.pi * phase), 4),
         "days_to_full": round(((0.5 - phase) % 1.0) * 29.53059, 1),
