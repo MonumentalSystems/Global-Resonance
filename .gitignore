@@ -14,7 +14,13 @@ node_modules/
 frontend/dist/
 
 # Output
-backend/output/
+# Ignore output/ contents, but keep the directory itself traversable so the
+# trained JellyBallNet weights below can be un-ignored. (A `!` rule cannot
+# rescue a file inside a fully-ignored directory — git never descends into it.)
+backend/output/*
+# Exception: the trained JellyBallNet weights (~30 KB) ship with the image so
+# /api/jellyball/neural and the cavity-mode panel work on a fresh deploy.
+!backend/output/jellyball_net.pt
 target/
 **/target/
 *.png
