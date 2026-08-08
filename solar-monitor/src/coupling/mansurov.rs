@@ -42,6 +42,9 @@ impl MansurovPathway {
     pub fn update(&mut self, feeds: &FeedState) {
         if feeds.solar_wind.len() < 10 {
             self.score = 0.0;
+            self.sector = ImfSector::Neutral;
+            self.sector_duration_hours = 0.0;
+            self.mean_by = 0.0;
             return;
         }
 

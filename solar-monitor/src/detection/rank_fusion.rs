@@ -55,6 +55,8 @@ pub struct RankFusionDetector {
     /// Minimum detector agreement (score > 0.3) required for alert.
     /// Eliminates FPs where only one noisy detector fires.
     min_agreement: usize,
+    /// Whether each detector received the channels required for this observation.
+    available: [bool; N_DETECTORS],
 }
 
 /// Names of the 7 detectors (for diagnostics).
@@ -87,6 +89,7 @@ pub struct DetectorScore {
     pub raw_score: f64,
     pub percentile_rank: f64,
     pub is_anomalous: bool,
+    pub available: bool,
 }
 
 /// Maintains a sliding window of scores for percentile ranking.
@@ -144,19 +147,17 @@ impl RankFusionDetector {
             criticality: CriticalityDetector::default_detector(),
             score_histories: std::array::from_fn(|_| ScoreHistory::new(500)),
             // Weights optimized for commutator-enhanced 7-detector ensemble.
-            // Rebalanced to reflect B-field integration:
-            // - multichannel upgraded (now 3-channel with B-field decorrelation)
-            // - criticality: primary predictive signal (commutator + loading)
-            // - zscore: still highest reactive selectivity
-            // Normalized to sum to 1.0.
+            // Relative weights for the six observational channels, normalized
+            // after excluding the uncalibrated criticality research diagnostic
+            // from live alert decisions.
             weights: [
-                0.22, // zscore: highest reactive selectivity (8.5x)
-                0.14, // cusum: high selectivity (4.9x), always fires on TP
-                0.14, // hardness: 0.999 on X1.5, clean 1-min cadence
-                0.03, // rate_of_change: low weight, brief spikes
-                0.14, // multichannel: upgraded with B-field decorrelation
-                0.10, // proton: 76x flux increase, 5-min cadence
-                0.23, // criticality: commutator + loading + C×A (predictive)
+                0.285714, // zscore
+                0.181818, // cusum
+                0.181818, // hardness
+                0.038961, // rate_of_change
+                0.181818, // multichannel
+                0.129870, // proton
+                0.0,      // criticality: research diagnostic only
             ],
             fused_score: 0.0,
             percentile_ranks: [0.0; N_DETECTORS],
@@ -164,6 +165,7 @@ impl RankFusionDetector {
             current_time: None,
             alert_threshold,
             min_agreement,
+            available: [false; N_DETECTORS],
         }
     }
 
@@ -198,6 +200,7 @@ impl RankFusionDetector {
         if xray_long < 1e-9 {
             return;
         }
+        self.available = [true; N_DETECTORS];
 
         // Feed all detectors
         self.zscore.ingest(xray_long, timestamp);
@@ -262,6 +265,7 @@ impl RankFusionDetector {
         if xray_long < 1e-9 {
             return;
         }
+        self.available = [true; N_DETECTORS];
 
         // Scalar detectors — same as ingest().
         self.zscore.ingest(xray_long, timestamp);
@@ -347,6 +351,7 @@ impl RankFusionDetector {
         if xray_long < 1e-9 {
             return;
         }
+        self.available = [true; N_DETECTORS];
 
         // Scalar detectors.
         self.zscore.ingest(xray_long, timestamp);
@@ -419,13 +424,103 @@ impl RankFusionDetector {
         self.ingest(xray_flux, xray_short, electron_flux, 0.3, timestamp);
     }
 
+    /// Live ingestion with explicit channel availability.
+    ///
+    /// Missing channels are excluded from fusion and agreement. They are never
+    /// replaced with synthetic quiet values.
+    pub fn ingest_available(
+        &mut self,
+        xray_long: f64,
+        xray_short: Option<f64>,
+        electron_flux: Option<f64>,
+        proton_flux: Option<f64>,
+        bfield: Option<(f64, f64, f64)>,
+        timestamp: DateTime<Utc>,
+    ) {
+        self.current_flux = xray_long;
+        self.current_time = Some(timestamp);
+        if xray_long < 1e-9 {
+            return;
+        }
+
+        self.zscore.ingest(xray_long, timestamp);
+        self.cusum.ingest(xray_long, timestamp);
+        self.rate.ingest(xray_long, timestamp);
+
+        if let Some(short) = xray_short {
+            self.hardness.ingest(short, xray_long, timestamp);
+        }
+        match (electron_flux, bfield) {
+            (Some(electrons), Some((bx, by, bz))) => self
+                .multichannel
+                .ingest_with_bfield(xray_long, electrons, bx, by, bz, timestamp),
+            (Some(electrons), None) => self.multichannel.ingest(xray_long, electrons, timestamp),
+            (None, _) => {}
+        }
+        if let Some(protons) = proton_flux {
+            self.proton.ingest(protons, xray_long, timestamp);
+        }
+
+        // Criticality is a research-only diagnostic. Update it only when every
+        // scalar input is measured; it remains excluded from live fusion weight.
+        if let (Some(short), Some(protons)) = (xray_short, proton_flux) {
+            if let Some((bx, by, bz)) = bfield {
+                self.criticality
+                    .ingest_with_bfield(bx, by, bz, xray_long, protons, timestamp);
+            } else {
+                self.criticality
+                    .ingest(xray_long, short, protons, timestamp);
+            }
+        }
+
+        self.available = [
+            true,
+            true,
+            xray_short.is_some(),
+            true,
+            electron_flux.is_some(),
+            proton_flux.is_some(),
+            xray_short.is_some() && proton_flux.is_some(),
+        ];
+        self.fuse_available();
+    }
+
+    fn fuse_available(&mut self) {
+        let raw_scores = [
+            self.zscore.score(),
+            self.cusum.score(),
+            self.hardness.score(),
+            self.rate.score(),
+            self.multichannel.score(),
+            self.proton.score(),
+            self.criticality.score(),
+        ];
+        let mut weighted_sum = 0.0;
+        let mut weight_sum = 0.0;
+        for (i, &score) in raw_scores.iter().enumerate() {
+            if self.available[i] {
+                self.percentile_ranks[i] = self.score_histories[i].percentile_rank(score);
+                self.score_histories[i].push(score);
+                weighted_sum += self.percentile_ranks[i] * self.weights[i];
+                weight_sum += self.weights[i];
+            } else {
+                self.percentile_ranks[i] = 0.0;
+            }
+        }
+        self.fused_score = if weight_sum > 0.0 {
+            weighted_sum / weight_sum
+        } else {
+            0.0
+        };
+    }
+
     /// Fused anomaly score (0..1).
     pub fn score(&self) -> f64 {
         self.fused_score
     }
 
-    /// Raw criticality detector score (0..1) — predictive SHARP-based signal only.
-    /// Use for isolated evaluation of the physics-based predictor.
+    /// Raw criticality detector score (0..1), retained for research evaluation.
+    /// It is excluded from live fusion weighting and detector agreement.
     pub fn criticality_score(&self) -> f64 {
         self.criticality.score()
     }
@@ -461,7 +556,11 @@ impl RankFusionDetector {
             self.proton.score(),
             self.criticality.score(),
         ];
-        scores.iter().filter(|&&s| s > 0.3).count()
+        scores[..6]
+            .iter()
+            .enumerate()
+            .filter(|(i, score)| self.available[*i] && **score > 0.3)
+            .count()
     }
 
     /// Full diagnostics for the current state.
@@ -494,6 +593,7 @@ impl RankFusionDetector {
                     raw_score: raw_scores[i],
                     percentile_rank: self.percentile_ranks[i],
                     is_anomalous: anomalous[i],
+                    available: self.available[i],
                 })
                 .collect(),
             detector_agreement: self.detector_agreement(),
@@ -547,6 +647,44 @@ mod tests {
         det.ingest(3e-4, 8e-5, 50000.0, 15.0, ts(201));
         assert!(det.detector_agreement() >= 1);
         assert!(det.score() > 0.3);
+    }
+
+    #[test]
+    fn sustained_observed_flare_reaches_live_alert_gate() {
+        let mut det = RankFusionDetector::default_detector();
+        for i in 0..200 {
+            det.ingest(5e-7, 2e-8, 100.0, 0.3, ts(i));
+        }
+        for i in 201..211 {
+            let progress = (i - 200) as f64 / 10.0;
+            let long = 5e-7 + progress * 3e-4;
+            det.ingest(long, long * 0.25, 50_000.0, 15.0, ts(i));
+        }
+        assert!(
+            det.is_anomalous(),
+            "observed flare sequence should cross live gate: score={:.3}, agreement={}",
+            det.score(),
+            det.detector_agreement(),
+        );
+    }
+
+    #[test]
+    fn missing_live_channels_are_excluded_not_synthesized() {
+        let mut det = RankFusionDetector::default_detector();
+        for i in 0..200 {
+            det.ingest_available(5e-7, None, None, None, None, ts(i));
+        }
+        let diag = det.diagnostics();
+        assert!(diag.raw_scores[0].available);
+        assert!(diag.raw_scores[1].available);
+        assert!(!diag.raw_scores[2].available); // hardness requires short XRS
+        assert!(diag.raw_scores[3].available);
+        assert!(!diag.raw_scores[4].available); // multichannel requires electrons
+        assert!(!diag.raw_scores[5].available); // proton detector requires protons
+        assert!(!diag.raw_scores[6].available); // criticality requires measured inputs
+        assert_eq!(diag.raw_scores[2].percentile_rank, 0.0);
+        assert_eq!(diag.raw_scores[4].percentile_rank, 0.0);
+        assert_eq!(diag.raw_scores[5].percentile_rank, 0.0);
     }
 
     #[test]

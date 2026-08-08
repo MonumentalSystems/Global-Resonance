@@ -69,6 +69,41 @@ pub struct SharpTrend {
     pub d_shrgt45: f64,
 }
 
+/// Experimental diagnostic motivated by Kim et al. (2026), ApJL 1005 L26.
+///
+/// Their model used 24-hour time series and a nonlinear interaction between
+/// total and absolute current helicity.  This instantaneous proxy is therefore
+/// exposed for validation only; it is not a calibrated flare probability and
+/// is not included in `sharp_flare_risk`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HelicityInteractionDiagnostic {
+    pub interaction_proxy: f64,
+    pub total_unsigned_current_helicity: f64,
+    pub absolute_net_current_helicity: f64,
+    pub source_doi: &'static str,
+    pub operational_score_modified: bool,
+}
+
+pub fn helicity_interaction_diagnostic(record: &SharpRecord) -> HelicityInteractionDiagnostic {
+    let total = if record.totusjh.is_finite() {
+        record.totusjh.abs()
+    } else {
+        0.0
+    };
+    let absolute = if record.absnjzh.is_finite() {
+        record.absnjzh.abs()
+    } else {
+        0.0
+    };
+    HelicityInteractionDiagnostic {
+        interaction_proxy: total * absolute,
+        total_unsigned_current_helicity: total,
+        absolute_net_current_helicity: absolute,
+        source_doi: "10.3847/2041-8213/ae6cf8",
+        operational_score_modified: false,
+    }
+}
+
 /// Fetch SHARP parameters for all active HARPs from JSOC.
 ///
 /// Uses the JSOC JSON API. Returns the latest 12-minute record for each HARP.
@@ -305,5 +340,17 @@ mod tests {
     fn test_flare_risk_complex_ar() {
         let rec = make_record(5e22, 150.0, 40.0, 1e5, 1e5, 5e4, 1e13);
         assert!(sharp_flare_risk(&rec) > 0.6);
+    }
+
+    #[test]
+    fn test_helicity_interaction_is_diagnostic_only() {
+        let mut rec = make_record(5e22, 150.0, 40.0, 2e4, 1e5, 5e4, 1e13);
+        rec.absnjzh = 30.0;
+        let diagnostic = helicity_interaction_diagnostic(&rec);
+        assert_eq!(diagnostic.interaction_proxy, 6e5);
+        assert!(!diagnostic.operational_score_modified);
+        let json = serde_json::to_value(&diagnostic).unwrap();
+        assert_eq!(json["source_doi"], "10.3847/2041-8213/ae6cf8");
+        assert_eq!(json["operational_score_modified"], false);
     }
 }

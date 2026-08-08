@@ -69,10 +69,25 @@ impl StressorIndex {
 
     /// Update all pathways with current feed state and any flare onset.
     pub fn update(&mut self, feeds: &FeedState, flare: Option<&FlareOnset>) {
-        self.forbush.update(feeds, flare);
-        self.heep.update(feeds);
-        self.ssc.update(feeds);
-        self.mansurov.update(feeds);
+        let quality = feeds.quality(Utc::now());
+        let mut fresh = feeds.clone();
+        if !quality.electrons.fresh {
+            fresh.electrons.clear();
+        }
+        if !quality.protons.fresh {
+            fresh.protons.clear();
+        }
+        if !quality.solar_wind.fresh {
+            fresh.solar_wind.clear();
+        }
+        if !quality.kp_dst.fresh {
+            fresh.kp_dst.clear();
+        }
+
+        self.forbush.update(&fresh, flare);
+        self.heep.update(&fresh);
+        self.ssc.update(&fresh);
+        self.mansurov.update(&fresh);
         self.lunar.update();
     }
 
@@ -109,11 +124,43 @@ impl StressorIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn test_stressor_index_default() {
         let idx = StressorIndex::new();
         let score = idx.compute();
         assert_eq!(score.pathways.len(), 5);
+    }
+
+    #[test]
+    fn stale_auxiliary_observations_are_neutralized() {
+        let stale = Utc::now() - Duration::hours(8);
+        let mut feeds = FeedState::new();
+        feeds
+            .electrons
+            .push_back(crate::feeds::electrons::ElectronSample {
+                time_tag: stale,
+                satellite: 18,
+                flux: 50_000.0,
+            });
+        for minute in 0..61 {
+            feeds
+                .solar_wind
+                .push_back(crate::feeds::solar_wind::SolarWindSample {
+                    time_tag: stale + Duration::minutes(minute),
+                    speed: if minute == 60 { 900.0 } else { 300.0 },
+                    density: 20.0,
+                    bx: 0.0,
+                    by: 8.0,
+                    bz: -20.0,
+                });
+        }
+
+        let mut idx = StressorIndex::new();
+        idx.update(&feeds, None);
+        assert_eq!(idx.heep.status().score, 0.0);
+        assert_eq!(idx.ssc.status().score, 0.0);
+        assert_eq!(idx.mansurov.status().score, 0.0);
     }
 }

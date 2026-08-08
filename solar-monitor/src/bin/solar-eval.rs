@@ -10,7 +10,7 @@
 //! - Comparison table vs SolarFlareNet and Doria Rosales
 //! - Threshold sweep for optimal TSS
 
-use crate::models::solar_flare::SolarFlareModel;
+use solar_monitor::models::solar_flare::SolarFlareModel;
 use solar_monitor::backtest::sharp_dataset::{
     brier_score, brier_skill_score, ClassificationMetrics, DatasetConfig, SharpDataset,
 };
@@ -84,7 +84,7 @@ fn main() {
         }
     } else {
         println!("No checkpoint specified — using freshly initialized model");
-        crate::models::solar_flare::SolarFlareModel::new(Default::default())
+        solar_monitor::models::solar_flare::SolarFlareModel::new(Default::default())
     };
 
     println!("Parameters: {}", model.param_count());

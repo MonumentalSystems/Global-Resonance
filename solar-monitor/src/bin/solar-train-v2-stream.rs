@@ -13,7 +13,7 @@
 //!                         --flares solar-monitor/data/catalogs/solar_flares.csv \
 //!                         --epochs 100 --patience 20
 
-use crate::models::solar_flare_v2::{
+use solar_monitor::models::solar_flare_v2::{
     SolarFlareV2, SolarFlareV2Config, V2StreamState,
     J_CRITICAL, N_FIELDS, N_ORBITAL, N_INPUT,
 };

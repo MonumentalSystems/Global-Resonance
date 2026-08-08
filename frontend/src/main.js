@@ -3,8 +3,8 @@
 // ============================================================
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-// Three.js kept for future magnetosphere/solar wind overlay
-import * as THREE from 'three';
+import { colorBucket, sampleVector, seedMovingParticle } from './flow-field.js';
+import { escapeHtml } from './dom-safe.js';
 
 // Same-origin '/api' works everywhere: the Vite dev server proxies /api -> :8000
 // (see vite.config.js), and in production FastAPI serves the API and this
@@ -12,6 +12,11 @@ import * as THREE from 'three';
 const API = window.API_BASE || '/api';
 const SOLAR_API = window.SOLAR_MONITOR_URL || API + '/solar';
 const POLL = 30_000;
+const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const scheduleIdle = (callback, timeout = 2000) => {
+    if ('requestIdleCallback' in window) window.requestIdleCallback(callback, { timeout });
+    else window.setTimeout(callback, Math.min(timeout, 800));
+};
 
 // ============================================================
 // MATERIALS: ANIMATED FLOW LINES (wind, currents)
@@ -113,32 +118,28 @@ const viewer = new Cesium.Viewer(box, {
     imageryProvider: false,
 });
 
-// Add imagery: try ArcGIS first, fallback to bundled Natural Earth
+// Paint a bundled base immediately, then replace it with fresh satellite
+// imagery when ArcGIS metadata resolves. Slow networks never see a blank globe.
+const fallbackImageryLayer = Cesium.ImageryLayer.fromProviderAsync(
+    Cesium.TileMapServiceImageryProvider.fromUrl(
+        Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')
+    )
+);
+viewer.imageryLayers.add(fallbackImageryLayer);
+
 (async () => {
     try {
         const arcgis = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
             'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
         );
-        viewer.imageryLayers.addImageryProvider(arcgis);
+        const satelliteLayer = viewer.imageryLayers.addImageryProvider(arcgis, 0);
+        satelliteLayer.brightness = 0.82;
+        satelliteLayer.contrast = 1.08;
+        satelliteLayer.saturation = 0.82;
+        viewer.imageryLayers.remove(fallbackImageryLayer, true);
         console.log('ArcGIS World Imagery loaded');
     } catch (e) {
-        console.warn('ArcGIS unavailable, trying Natural Earth:', e.message);
-        try {
-            const tms = await Cesium.TileMapServiceImageryProvider.fromUrl(
-                Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')
-            );
-            viewer.imageryLayers.addImageryProvider(tms);
-            console.log('Natural Earth imagery loaded');
-        } catch (e2) {
-            console.warn('Natural Earth also failed:', e2.message);
-            // Last resort: OpenStreetMap
-            viewer.imageryLayers.addImageryProvider(
-                new Cesium.OpenStreetMapImageryProvider({
-                    url: 'https://tile.openstreetmap.org/',
-                })
-            );
-            console.log('OpenStreetMap imagery loaded');
-        }
+        console.warn('ArcGIS unavailable; keeping bundled Natural Earth:', e.message);
     }
 })();
 
@@ -151,6 +152,8 @@ viewer.scene.globe.dynamicAtmosphereLighting = true;
 viewer.scene.globe.dynamicAtmosphereLightingFromSun = true;
 viewer.scene.globe.showGroundAtmosphere = true;
 viewer.scene.globe.atmosphereBrightnessShift = -0.1;
+viewer.scene.fog.enabled = true;
+viewer.scene.fog.screenSpaceErrorFactor = 2.0;
 
 // Occlude entities behind the globe. Without this, markers/labels on the far
 // side render through the Earth and appear over the wrong continents, shifting
@@ -181,7 +184,7 @@ viewer.camera.setView({
     },
 });
 
-// Cesium canvas stays at default z-index; Three.js overlay goes on top with pointer-events:none
+// Cesium canvas stays at the default z-index; flow canvases sit above it.
 
 // Remove default Cesium UI chrome
 const toolbar = box.querySelector('.cesium-viewer-toolbar');
@@ -190,74 +193,10 @@ const bottomContainer = box.querySelector('.cesium-viewer-bottom');
 if (bottomContainer) bottomContainer.style.display = 'none';
 
 // ============================================================
-// THREE.JS SPACE PHYSICS OVERLAY
+// RENDERER OWNERSHIP
 // ============================================================
-// Three.js renders magnetosphere, solar wind, comet, cosmic rays
-// on a transparent canvas overlaid on the Cesium globe.
-// We position the overlay BEHIND Cesium's canvas and use Cesium
-// primitives for near-Earth features instead.
-
-// Three.js overlay disabled — Cesium handles all rendering.
-// Magnetosphere/solar wind will be added as Cesium primitives later.
-const threeScene = new THREE.Scene();
-const threeCamera = new THREE.PerspectiveCamera(45, 1, 0.01, 200);
-
-// Three.js helpers
-const R = 1;
-function ll2v(lat, lon, r = R * 1.001) {
-    const p = (90 - lat) * Math.PI / 180, t = (lon + 180) * Math.PI / 180;
-    return new THREE.Vector3(-r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t));
-}
-
-// Camera sync: map Cesium ECEF camera to Three.js scene
-const EARTH_RADIUS = 6371000;
-const SCALE = R / EARTH_RADIUS;
-
-function syncThreeCamera() {
-    const cam = viewer.camera;
-    const pos = cam.positionWC;
-    const dir = cam.directionWC;
-    const up = cam.upWC;
-
-    // Cesium uses ECEF (X=equator/prime meridian, Y=equator/90E, Z=north pole)
-    // Three.js: X=right, Y=up, Z=toward viewer
-    // Map: Cesium X -> Three X, Cesium Z -> Three Y, Cesium -Y -> Three Z
-    threeCamera.position.set(pos.x * SCALE, pos.z * SCALE, -pos.y * SCALE);
-
-    const lookTarget = new THREE.Vector3(
-        (pos.x + dir.x * 10000) * SCALE,
-        (pos.z + dir.z * 10000) * SCALE,
-        -(pos.y + dir.y * 10000) * SCALE
-    );
-    threeCamera.up.set(up.x, up.z, -up.y);
-    threeCamera.lookAt(lookTarget);
-
-    // Match FOV
-    if (cam.frustum.fovy) {
-        threeCamera.fov = Cesium.Math.toDegrees(cam.frustum.fovy);
-    }
-    threeCamera.updateProjectionMatrix();
-}
-
-// Three.js layer groups (for space physics only)
-const threeLayerGroups = {};
-function getThreeLayer(name) {
-    if (!threeLayerGroups[name]) {
-        threeLayerGroups[name] = new THREE.Group();
-        threeScene.add(threeLayerGroups[name]);
-    }
-    return threeLayerGroups[name];
-}
-function clearThreeLayer(name) {
-    const g = threeLayerGroups[name];
-    if (!g) return;
-    while (g.children.length) {
-        const c = g.children[0];
-        if (c.geometry) c.geometry.dispose();
-        if (c.material) { if (Array.isArray(c.material)) c.material.forEach(m => m.dispose()); else c.material.dispose(); }
-        g.remove(c);
-    }
-}
+// A previous Three.js overlay was disabled but still constructed hundreds of
+// invisible geometries on every poll. Cesium is the sole live 3D renderer now.
 
 // ============================================================
 // CESIUM DATA LAYERS
@@ -267,7 +206,7 @@ function clearThreeLayer(name) {
 const layerVisible = {
     earthquakes: true, 'eq-waves': true, 'jelly-ball': true,
     subsolar: true, terminator: true, plates: true,
-    magnetometers: false, weather: true, 'wind-field': true, 'ocean-currents': true, clouds: true, geojson: false,
+    magnetometers: false, weather: true, 'wind-field': false, 'ocean-currents': !prefersReducedMotion, clouds: true, geojson: false,
     'magnetic-field': true, 'solar-wind': true, telluric: true,
     'magnetic-anomalies': true,
     'ocean-lights': true,
@@ -275,7 +214,7 @@ const layerVisible = {
 
 // --- Live state variables (updated by poll loop) ---
 let magnetoCompression = 1.0, stormLevel = 0, currentBz = 0, currentKp = 2, currentDst = 0;
-let swSpeed = 400, swDensity = 5, swElectronFlux = 100, swProtonScore = 0;
+let swSpeed = 400, swDensity = 5;
 
 // --- Data sources for each Cesium layer ---
 const dataSources = {};
@@ -294,11 +233,22 @@ function clearDataSource(name) {
 }
 
 function setLayerVisible(name, visible) {
-    layerVisible[name] = visible;
-    if (dataSources[name]) dataSources[name].show = visible;
-    if (threeLayerGroups[name]) threeLayerGroups[name].visible = visible;
-    if (name === 'wind-field') setWindFieldVisible(visible);
-    if (name === 'ocean-currents') setOceanFieldVisible(visible);
+    const isFlowLayer = name === 'wind-field' || name === 'ocean-currents';
+    const effectiveVisible = isFlowLayer && prefersReducedMotion ? false : visible;
+    layerVisible[name] = effectiveVisible;
+    if (dataSources[name]) dataSources[name].show = effectiveVisible;
+    if (name === 'wind-field') setWindFieldVisible(effectiveVisible);
+    if (name === 'ocean-currents') setOceanFieldVisible(effectiveVisible);
+    document.querySelectorAll(`[data-layer="${name}"]`).forEach(input => {
+        input.checked = effectiveVisible;
+    });
+    document.querySelectorAll(`[data-quick-layer="${name}"]`).forEach(button => {
+        button.setAttribute('aria-pressed', String(effectiveVisible));
+    });
+    if (name === 'ocean-currents') {
+        const legend = document.getElementById('ocean-legend');
+        if (legend) legend.hidden = !effectiveVisible;
+    }
 }
 
 // ============================================================
@@ -318,6 +268,7 @@ async function updateEarthquakes(data) {
     const ds = await getDataSource('earthquakes');
     ds.entities.removeAll();
     eqWaves.length = 0;
+    updateCompoundFaultContext(data?.compound_fault_advisories || []);
     if (!data?.earthquakes) return;
     const now = Date.now();
 
@@ -371,6 +322,28 @@ async function updateEarthquakes(data) {
         }
     }
     document.getElementById('st-eqs').textContent = data.earthquakes.length;
+}
+
+function updateCompoundFaultContext(advisories) {
+    const panel = document.getElementById('compound-fault-context');
+    const copy = document.getElementById('compound-fault-copy');
+    const source = document.getElementById('compound-fault-source');
+    if (!panel || !copy || !source) return;
+
+    const candidates = advisories.filter(item => item?.status === 'PENDING_AUTHORITATIVE_CONFIRMATION');
+    const advisory = candidates[0];
+    if (!advisory) {
+        panel.style.display = 'none';
+        copy.textContent = '';
+        source.removeAttribute('href');
+        return;
+    }
+
+    const additional = Math.max(0, candidates.length - 1);
+    const suffix = additional ? ` (+${additional} additional candidate${additional === 1 ? '' : 's'})` : '';
+    copy.textContent = `Candidate ${advisory.trigger_candidate}; monitor ${advisory.target} after authoritative fault attribution${suffix}.`;
+    source.href = advisory.source;
+    panel.style.display = 'block';
 }
 
 function greatCircleDegrees(lat, lon, radiusDeg, nPts = 120) {
@@ -1073,7 +1046,7 @@ async function loadPlates() {
                 const color = feat?.properties.color || '#445566';
                 const btype = feat?.properties.boundary_type || '';
                 const symbol = btype === 'convergent' ? 'C' : btype === 'divergent' ? 'D' : 'T';
-                return `<span class="plate-tag"><span class="swatch" style="background:${color}"></span>${name} (${symbol})</span>`;
+                return `<span class="plate-tag"><span class="swatch" style="background:${color}"></span>${escapeHtml(name)} (${symbol})</span>`;
             }).join('');
         }
     } catch (e) { console.warn('Plates:', e.message); }
@@ -1415,23 +1388,28 @@ const windCanvas = document.getElementById('wind-canvas');
 const windCtx = windCanvas?.getContext('2d');
 const oceanCanvas = document.getElementById('ocean-canvas');
 const oceanCtx = oceanCanvas?.getContext('2d');
-let windFieldVisible = true;
+let windFieldVisible = false;
 
 function setWindFieldVisible(visible) {
     windFieldVisible = visible;
     if (windCanvas) windCanvas.style.display = visible ? 'block' : 'none';
+    if (visible && !windField.grid) refreshWindField();
+    if (!visible && windCtx && windCanvas) windCtx.clearRect(0, 0, windCanvas.width, windCanvas.height);
 }
 
-let oceanFieldVisible = true;
+let oceanFieldVisible = !prefersReducedMotion;
+let flowFieldsReady = false;
 
 function setOceanFieldVisible(visible) {
-    oceanFieldVisible = visible;
-    if (oceanCanvas) oceanCanvas.style.display = visible ? 'block' : 'none';
+    oceanFieldVisible = visible && !prefersReducedMotion;
+    if (oceanCanvas) oceanCanvas.style.display = oceanFieldVisible ? 'block' : 'none';
+    if (oceanFieldVisible && !oceanField.grid) refreshOceanField();
+    if (!oceanFieldVisible && oceanCtx && oceanCanvas) oceanCtx.clearRect(0, 0, oceanCanvas.width, oceanCanvas.height);
 }
 
 function resizeOverlayCanvas(canvas, ctx) {
     if (!canvas || !ctx) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     canvas.width = Math.floor(canvas.clientWidth * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1440,6 +1418,10 @@ window.addEventListener('resize', resizeWindCanvas);
 function resizeWindCanvas() {
     resizeOverlayCanvas(windCanvas, windCtx);
     resizeOverlayCanvas(oceanCanvas, oceanCtx);
+    if (flowFieldsReady) {
+        windField.resetParticles();
+        oceanField.resetParticles();
+    }
 }
 resizeWindCanvas();
 
@@ -1492,37 +1474,7 @@ const windField = {
         return { lat, lon, age: Math.random() * this.maxAge };
     },
     sample(lat, lon) {
-        const g = this.grid;
-        if (!g) return null;
-        if (lat < g.minLat || lat > g.maxLat) return null;
-        let lonWrap = lon;
-        while (lonWrap < g.minLon) lonWrap += 360;
-        while (lonWrap > g.maxLon) lonWrap -= 360;
-
-        const i = (lat - g.minLat) / g.dLat;
-        const j = (lonWrap - g.minLon) / g.dLon;
-        const i0 = Math.floor(i);
-        let j0 = Math.floor(j);
-        const i1 = Math.min(g.nLat - 1, i0 + 1);
-        let j1 = j0 + 1;
-        if (j1 >= g.nLon) j1 = 0;
-        if (i0 < 0 || i1 >= g.nLat) return null;
-
-        const fi = i - i0;
-        const fj = j - j0;
-
-        const idx = (ii, jj) => ii * g.nLon + jj;
-        const u00 = g.u[idx(i0, j0)], v00 = g.v[idx(i0, j0)];
-        const u10 = g.u[idx(i1, j0)], v10 = g.v[idx(i1, j0)];
-        const u01 = g.u[idx(i0, j1)], v01 = g.v[idx(i0, j1)];
-        const u11 = g.u[idx(i1, j1)], v11 = g.v[idx(i1, j1)];
-        if ([u00, v00, u10, v10, u01, v01, u11, v11].some(x => x == null)) return null;
-
-        const u0 = u00 * (1 - fi) + u10 * fi;
-        const u1 = u01 * (1 - fi) + u11 * fi;
-        const v0 = v00 * (1 - fi) + v10 * fi;
-        const v1 = v01 * (1 - fi) + v11 * fi;
-        return { u: u0 * (1 - fj) + u1 * fj, v: v0 * (1 - fj) + v1 * fj };
+        return sampleVector(this.grid, lat, lon);
     },
 };
 
@@ -1651,23 +1603,27 @@ async function refreshWindField() {
 }
 
 function stepWindField() {
-    if (!windCanvas || !windCtx || !windField.grid || !windFieldVisible) {
-        requestAnimationFrame(stepWindField);
+    if (document.hidden || !windCanvas || !windCtx || !windField.grid || !windFieldVisible) {
+        setTimeout(() => requestAnimationFrame(stepWindField), document.hidden ? 1000 : 250);
         return;
     }
 
     const now = performance.now();
+    if (now - windField.lastFrame < 1000 / (prefersReducedMotion ? 8 : 24)) {
+        requestAnimationFrame(stepWindField);
+        return;
+    }
     const dt = Math.min(0.05, Math.max(0.012, (now - windField.lastFrame) / 1000));
     windField.lastFrame = now;
 
-    const dpr = window.devicePixelRatio || 1;
-    const w = windCanvas.width / dpr;
-    const h = windCanvas.height / dpr;
+    const w = windCanvas.clientWidth;
+    const h = windCanvas.clientHeight;
 
     windCtx.fillStyle = 'rgba(3,3,8,0.08)';
     windCtx.fillRect(0, 0, w, h);
     windCtx.globalCompositeOperation = 'lighter';
     windCtx.lineWidth = 1.1;
+    const segments = Array.from({ length: windColorStops.length - 1 }, () => []);
 
     for (let p of windField.particles) {
         if (p.age++ > windField.maxAge) {
@@ -1698,25 +1654,31 @@ function stepWindField() {
 
         const prevCart = Cesium.Cartesian3.fromDegrees(prevLon, prevLat, 12000);
         const nextCart = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 12000);
-        const prevPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, prevCart);
-        const nextPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, nextCart);
+        const prevPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, prevCart);
+        const nextPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, nextCart);
         if (!prevPos || !nextPos) continue;
         if (nextPos.x < 0 || nextPos.y < 0 || nextPos.x > w || nextPos.y > h) continue;
 
-        windCtx.strokeStyle = windColor(speed);
-        windCtx.beginPath();
-        windCtx.moveTo(prevPos.x, prevPos.y);
-        windCtx.lineTo(nextPos.x, nextPos.y);
-        windCtx.stroke();
+        segments[colorBucket(speed, windColorStops)].push([prevPos.x, prevPos.y, nextPos.x, nextPos.y]);
     }
 
+    segments.forEach((bucket, index) => {
+        if (!bucket.length) return;
+        const midpoint = (windColorStops[index].s + windColorStops[index + 1].s) / 2;
+        windCtx.strokeStyle = windColor(midpoint);
+        windCtx.beginPath();
+        bucket.forEach(([x0, y0, x1, y1]) => {
+            windCtx.moveTo(x0, y0);
+            windCtx.lineTo(x1, y1);
+        });
+        windCtx.stroke();
+    });
     windCtx.globalCompositeOperation = 'source-over';
     requestAnimationFrame(stepWindField);
 }
 
-refreshWindField();
-setInterval(refreshWindField, 15 * 60 * 1000);
-stepWindField();
+setInterval(() => { if (windFieldVisible) refreshWindField(); }, 15 * 60 * 1000);
+if (!prefersReducedMotion) stepWindField();
 
 // ============================================================
 // OCEAN CURRENTS FIELD (particle flow)
@@ -1759,91 +1721,82 @@ const oceanField = {
         if (!this.grid) return;
         const w = oceanCanvas?.clientWidth || 800;
         const h = oceanCanvas?.clientHeight || 600;
-        this.seedCount = Math.max(600, Math.min(1400, Math.floor((w * h) / 1400)));
+        this.seedCount = Math.max(420, Math.min(1000, Math.floor((w * h) / 2200)));
         this.particles = [];
         for (let i = 0; i < this.seedCount; i++) this.particles.push(this.randomParticle());
     },
     randomParticle() {
-        const g = this.grid;
-        const lat = g.minLat + Math.random() * (g.maxLat - g.minLat);
-        const lon = g.minLon + Math.random() * (g.maxLon - g.minLon);
-        return { lat, lon, age: Math.random() * this.maxAge };
+        const position = seedMovingParticle(this.grid, { minimumSpeed: 0.025, maxAttempts: 24 });
+        return { ...position, age: Math.random() * this.maxAge };
     },
     sample(lat, lon) {
-        const g = this.grid;
-        if (!g) return null;
-        if (lat < g.minLat || lat > g.maxLat) return null;
-        let lonWrap = lon;
-        while (lonWrap < g.minLon) lonWrap += 360;
-        while (lonWrap > g.maxLon) lonWrap -= 360;
-
-        const i = (lat - g.minLat) / g.dLat;
-        const j = (lonWrap - g.minLon) / g.dLon;
-        const i0 = Math.floor(i);
-        let j0 = Math.floor(j);
-        const i1 = Math.min(g.nLat - 1, i0 + 1);
-        let j1 = j0 + 1;
-        if (j1 >= g.nLon) j1 = 0;
-        if (i0 < 0 || i1 >= g.nLat) return null;
-
-        const fi = i - i0;
-        const fj = j - j0;
-
-        const idx = (ii, jj) => ii * g.nLon + jj;
-        const u00 = g.u[idx(i0, j0)], v00 = g.v[idx(i0, j0)];
-        const u10 = g.u[idx(i1, j0)], v10 = g.v[idx(i1, j0)];
-        const u01 = g.u[idx(i0, j1)], v01 = g.v[idx(i0, j1)];
-        const u11 = g.u[idx(i1, j1)], v11 = g.v[idx(i1, j1)];
-        if ([u00, v00, u10, v10, u01, v01, u11, v11].some(x => x == null)) return null;
-
-        const u0 = u00 * (1 - fi) + u10 * fi;
-        const u1 = u01 * (1 - fi) + u11 * fi;
-        const v0 = v00 * (1 - fi) + v10 * fi;
-        const v1 = v01 * (1 - fi) + v11 * fi;
-        return { u: u0 * (1 - fj) + u1 * fj, v: v0 * (1 - fj) + v1 * fj };
+        return sampleVector(this.grid, lat, lon);
     },
 };
+flowFieldsReady = true;
 
-async function refreshOceanField() {
-    const data = await fetchJSON('/ocean_currents');
-    if (!data?.grid?.lats || !data?.grid?.lons) return;
-    const lats = data.grid.lats;
-    const lons = data.grid.lons;
-    const grid = {
-        lats,
-        lons,
-        u: data.grid.u,
-        v: data.grid.v,
-        nLat: lats.length,
-        nLon: lons.length,
-        dLat: lats.length > 1 ? (lats[1] - lats[0]) : 1,
-        dLon: lons.length > 1 ? (lons[1] - lons[0]) : 1,
-        minLat: lats[0],
-        maxLat: lats[lats.length - 1],
-        minLon: lons[0],
-        maxLon: lons[lons.length - 1],
-    };
-    oceanField.setGrid(grid);
+let oceanFetchPromise = null;
+function refreshOceanField() {
+    if (oceanFetchPromise) return oceanFetchPromise;
+    oceanFetchPromise = (async () => {
+        const data = await fetchJSON('/ocean_currents', 30_000);
+        const stamp = document.getElementById('ocean-data-stamp');
+        if (data?.error) {
+            if (stamp) {
+                stamp.textContent = 'NOAA feed unavailable';
+                stamp.style.color = '#ffad72';
+            }
+            return;
+        }
+        if (!data?.grid?.lats || !data?.grid?.lons) return;
+        const lats = data.grid.lats;
+        const lons = data.grid.lons;
+        const grid = {
+            lats,
+            lons,
+            u: data.grid.u,
+            v: data.grid.v,
+            nLat: lats.length,
+            nLon: lons.length,
+            dLat: lats.length > 1 ? (lats[1] - lats[0]) : 1,
+            dLon: lons.length > 1 ? (lons[1] - lons[0]) : 1,
+            minLat: lats[0],
+            maxLat: lats[lats.length - 1],
+            minLon: lons[0],
+            maxLon: lons[lons.length - 1],
+        };
+        oceanField.setGrid(grid);
+        if (stamp) {
+            const timestamp = data.time || data.generated_at;
+            stamp.textContent = timestamp ? `NOAA · ${new Date(timestamp).toLocaleDateString()}` : 'NOAA surface analysis';
+            stamp.style.color = '';
+        }
+    })().finally(() => { oceanFetchPromise = null; });
+    return oceanFetchPromise;
 }
 
 function stepOceanField() {
-    if (!oceanCanvas || !oceanCtx || !oceanField.grid || !oceanFieldVisible) {
-        requestAnimationFrame(stepOceanField);
+    if (document.hidden || !oceanCanvas || !oceanCtx || !oceanField.grid || !oceanFieldVisible) {
+        setTimeout(() => requestAnimationFrame(stepOceanField), document.hidden ? 1000 : 250);
         return;
     }
 
     const now = performance.now();
+    if (now - oceanField.lastFrame < 1000 / (prefersReducedMotion ? 8 : 30)) {
+        requestAnimationFrame(stepOceanField);
+        return;
+    }
     const dt = Math.min(0.05, Math.max(0.012, (now - oceanField.lastFrame) / 1000));
     oceanField.lastFrame = now;
 
-    const dpr = window.devicePixelRatio || 1;
-    const w = oceanCanvas.width / dpr;
-    const h = oceanCanvas.height / dpr;
+    const w = oceanCanvas.clientWidth;
+    const h = oceanCanvas.clientHeight;
 
-    oceanCtx.fillStyle = 'rgba(2,4,10,0.08)';
+    oceanCtx.fillStyle = 'rgba(2,6,14,0.055)';
     oceanCtx.fillRect(0, 0, w, h);
     oceanCtx.globalCompositeOperation = 'lighter';
-    oceanCtx.lineWidth = 1.0;
+    oceanCtx.lineWidth = 1.15;
+    const segments = Array.from({ length: oceanColorStops.length - 1 }, () => []);
 
     for (let p of oceanField.particles) {
         if (p.age++ > oceanField.maxAge) {
@@ -1874,25 +1827,35 @@ function stepOceanField() {
 
         const prevCart = Cesium.Cartesian3.fromDegrees(prevLon, prevLat, 7000);
         const nextCart = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 7000);
-        const prevPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, prevCart);
-        const nextPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, nextCart);
+        const prevPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, prevCart);
+        const nextPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, nextCart);
         if (!prevPos || !nextPos) continue;
         if (nextPos.x < 0 || nextPos.y < 0 || nextPos.x > w || nextPos.y > h) continue;
 
-        oceanCtx.strokeStyle = oceanColor(speed);
-        oceanCtx.beginPath();
-        oceanCtx.moveTo(prevPos.x, prevPos.y);
-        oceanCtx.lineTo(nextPos.x, nextPos.y);
-        oceanCtx.stroke();
+        segments[colorBucket(speed, oceanColorStops)].push([prevPos.x, prevPos.y, nextPos.x, nextPos.y]);
     }
 
+    oceanCtx.shadowBlur = 5;
+    segments.forEach((bucket, index) => {
+        if (!bucket.length) return;
+        const midpoint = (oceanColorStops[index].s + oceanColorStops[index + 1].s) / 2;
+        const color = oceanColor(midpoint);
+        oceanCtx.strokeStyle = color;
+        oceanCtx.shadowColor = color;
+        oceanCtx.beginPath();
+        bucket.forEach(([x0, y0, x1, y1]) => {
+            oceanCtx.moveTo(x0, y0);
+            oceanCtx.lineTo(x1, y1);
+        });
+        oceanCtx.stroke();
+    });
+    oceanCtx.shadowBlur = 0;
     oceanCtx.globalCompositeOperation = 'source-over';
     requestAnimationFrame(stepOceanField);
 }
 
-refreshOceanField();
-setInterval(refreshOceanField, 6 * 60 * 60 * 1000);
-stepOceanField();
+setInterval(() => { if (oceanFieldVisible) refreshOceanField(); }, 6 * 60 * 60 * 1000);
+if (!prefersReducedMotion) stepOceanField();
 
 // ============================================================
 // GEOJSON / KML LOADER
@@ -1998,21 +1961,21 @@ handler.setInputAction(movement => {
             const eq = props;
             const ageH = (Date.now() - eq.time) / 3600000;
             const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
-            tip.innerHTML = `<b style="color:#ff6644">M${eq.mag?.toFixed(1)}</b> ${eq.place}<br>Depth: ${eq.depth?.toFixed(0) || '?'}km | ${ageH.toFixed(1)}h ago<br>${eq.ang_dist}deg | <span style="color:${zc[eq.zone] || '#888'}">${eq.zone}</span>`;
+            tip.innerHTML = `<b style="color:#ff6644">M${eq.mag?.toFixed(1)}</b> ${escapeHtml(eq.place)}<br>Depth: ${eq.depth?.toFixed(0) || '?'}km | ${ageH.toFixed(1)}h ago<br>${escapeHtml(eq.ang_dist)}deg | <span style="color:${zc[eq.zone] || '#888'}">${escapeHtml(eq.zone)}</span>`;
             tip.style.display = 'block';
             tip.style.left = (movement.endPosition.x + 14) + 'px';
             tip.style.top = (movement.endPosition.y - 10) + 'px';
             return;
         }
         if (props._type === 'plate') {
-            tip.innerHTML = `<b style="color:#4488ff">${props.name}</b><br><span style="color:#889">${props.boundary_type}</span>`;
+            tip.innerHTML = `<b style="color:#4488ff">${escapeHtml(props.name)}</b><br><span style="color:#889">${escapeHtml(props.boundary_type)}</span>`;
             tip.style.display = 'block';
             tip.style.left = (movement.endPosition.x + 14) + 'px';
             tip.style.top = (movement.endPosition.y - 10) + 'px';
             return;
         }
         if (props._type === 'telluric') {
-            tip.innerHTML = `<b style="color:#ff8844">${props.name}</b><br>Telluric J: <span style="color:#ff4">${props.j_mA_km} mA/km</span>`;
+            tip.innerHTML = `<b style="color:#ff8844">${escapeHtml(props.name)}</b><br>Telluric J: <span style="color:#ff4">${escapeHtml(props.j_mA_km)} mA/km</span>`;
             tip.style.display = 'block';
             tip.style.left = (movement.endPosition.x + 14) + 'px';
             tip.style.top = (movement.endPosition.y - 10) + 'px';
@@ -2040,21 +2003,21 @@ function showDetail(eq) {
     const ageH = (Date.now() - eq.time) / 3600000, dt = new Date(eq.time);
     const zc = { eye: '#44f', inner: '#66c', transition: '#4a4', wavefront: '#f44', 'wavefront-tail': '#f84', neutral: '#884', 'far-suppress': '#468', 'far-neutral': '#666', 'pre-antipodal': '#868', antipodal: '#c8c' };
     const zr = { eye: '0.85x', inner: '0.92x', transition: '0.98x', wavefront: '1.36x', 'wavefront-tail': '1.09x', neutral: '0.95x', 'far-suppress': '0.82x', 'far-neutral': '0.90x', 'pre-antipodal': '1.00x', antipodal: '1.16x' };
-    content.innerHTML = `<h3>M${eq.mag?.toFixed(1)} ${eq.place || 'Unknown'}</h3>
+    content.innerHTML = `<h3>M${eq.mag?.toFixed(1)} ${escapeHtml(eq.place || 'Unknown')}</h3>
         <div class="row"><span class="k">Time</span><span class="val">${dt.toISOString().replace('T', ' ').substring(0, 19)} UTC</span></div>
         <div class="row"><span class="k">Age</span><span class="val">${ageH < 1 ? (ageH * 60).toFixed(0) + ' min' : ageH.toFixed(1) + ' hours'} ago</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${eq.lat?.toFixed(3)}N, ${eq.lon?.toFixed(3)}E</span></div>
         <div class="row"><span class="k">Depth</span><span class="val">${eq.depth?.toFixed(1) || '?'} km</span></div>
-        <div class="row"><span class="k">Subsolar dist</span><span class="val">${eq.ang_dist} deg</span></div>
-        <div class="row"><span class="k">Jelly Ball zone</span><span class="zone-badge" style="background:${zc[eq.zone] || '#444'};color:#fff">${eq.zone} (${zr[eq.zone] || '?'})</span></div>
-        <div style="margin-top:8px;border-top:1px solid #222;padding-top:6px;"><a href="https://earthquake.usgs.gov/earthquakes/eventpage/${eq.id || ''}" target="_blank">USGS Event Page &rarr;</a></div>`;
+        <div class="row"><span class="k">Subsolar dist</span><span class="val">${escapeHtml(eq.ang_dist)} deg</span></div>
+        <div class="row"><span class="k">Jelly Ball zone</span><span class="zone-badge" style="background:${zc[eq.zone] || '#444'};color:#fff">${escapeHtml(eq.zone)} (${zr[eq.zone] || '?'})</span></div>
+        <div style="margin-top:8px;border-top:1px solid #222;padding-top:6px;"><a href="https://earthquake.usgs.gov/earthquakes/eventpage/${escapeHtml(eq.id || '')}" target="_blank" rel="noopener noreferrer">USGS Event Page &rarr;</a></div>`;
     panel.style.display = 'block';
 }
 
 function showMagDetail(st) {
     const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
-    content.innerHTML = `<h3 style="color:#cc44cc">${st.code} - ${st.name}</h3>
-        <div class="row"><span class="k">Network</span><span class="val">${st.network}</span></div>
+    content.innerHTML = `<h3 style="color:#cc44cc">${escapeHtml(st.code)} - ${escapeHtml(st.name)}</h3>
+        <div class="row"><span class="k">Network</span><span class="val">${escapeHtml(st.network)}</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${st.lat?.toFixed(2)}N, ${st.lon?.toFixed(2)}E</span></div>`;
     panel.style.display = 'block';
 }
@@ -2064,22 +2027,22 @@ function showOceanLightDetail(r) {
     const typeColors = { te_lapa: '#33ffcc', st_elmo: '#8866ff', eq_light: '#ff8833' };
     const typeNames = { te_lapa: 'Te Lapa', st_elmo: "St. Elmo's Fire", eq_light: 'Earthquake Light' };
     const c = typeColors[r.type] || '#fff';
-    content.innerHTML = `<h3 style="color:${c}">${typeNames[r.type] || r.type}</h3>
-        <div class="row"><span class="k">Report</span><span class="val">${r.name}</span></div>
-        <div class="row"><span class="k">Observer</span><span class="val">${r.observer || '?'}</span></div>
-        <div class="row"><span class="k">Date</span><span class="val">${r.year || '?'}</span></div>
+    content.innerHTML = `<h3 style="color:${c}">${escapeHtml(typeNames[r.type] || r.type)}</h3>
+        <div class="row"><span class="k">Report</span><span class="val">${escapeHtml(r.name)}</span></div>
+        <div class="row"><span class="k">Observer</span><span class="val">${escapeHtml(r.observer || '?')}</span></div>
+        <div class="row"><span class="k">Date</span><span class="val">${escapeHtml(r.year || '?')}</span></div>
         <div class="row"><span class="k">Location</span><span class="val">${r.lat?.toFixed(1)}°, ${r.lon?.toFixed(1)}°</span></div>
-        <div class="row"><span class="k">Ocean current</span><span class="val" style="color:${c}">${r.current || '?'}</span></div>
-        ${r.desc ? `<div style="margin-top:6px;font-size:11px;color:#aaa;line-height:1.4">${r.desc}</div>` : ''}`;
+        <div class="row"><span class="k">Ocean current</span><span class="val" style="color:${c}">${escapeHtml(r.current || '?')}</span></div>
+        ${r.desc ? `<div style="margin-top:6px;font-size:11px;color:#aaa;line-height:1.4">${escapeHtml(r.desc)}</div>` : ''}`;
     panel.style.display = 'block';
 }
 
 function showAnomalyDetail(a) {
     const panel = document.getElementById('detail'), content = document.getElementById('detail-content');
     const regimeColor = a.schumann_regime === 'scatterer' ? '#ff44ff' : a.schumann_regime === 'absorber' ? '#ffaa44' : '#8888ff';
-    content.innerHTML = `<h3 style="color:${regimeColor}">${a.name}</h3>
-        <div class="row"><span class="k">Type</span><span class="val">${a.type}</span></div>
-        <div class="row"><span class="k">Country</span><span class="val">${a.country}</span></div>
+    content.innerHTML = `<h3 style="color:${regimeColor}">${escapeHtml(a.name)}</h3>
+        <div class="row"><span class="k">Type</span><span class="val">${escapeHtml(a.type)}</span></div>
+        <div class="row"><span class="k">Country</span><span class="val">${escapeHtml(a.country)}</span></div>
         <div class="row"><span class="k">Anomaly</span><span class="val" style="color:${regimeColor}">${a.strength_nT > 0 ? '+' : ''}${a.strength_nT} nT</span></div>
         <div class="row"><span class="k">Conductivity</span><span class="val">${a.conductivity_Sm} S/m</span></div>
         <div class="row"><span class="k">Area</span><span class="val">${a.area_km2?.toLocaleString()} km&sup2;</span></div>
@@ -2095,116 +2058,16 @@ function showAnomalyDetail(a) {
 }
 
 // ============================================================
-// THREE.JS SPACE PHYSICS (magnetosphere, solar wind, comet, CR)
+// SPACE-WEATHER STATE (rendered by Cesium primitives above)
 // ============================================================
-
-// Sun is rendered by Cesium (real position + lighting)
-const SUN_X = 10; // used by comet/solar-wind for direction reference
-
-// --- MAGNETOSPHERE ---
-let reconnectionPositions = null, reconnectionPts = null;
-const BOW_STANDOFF = () => 1.6 * magnetoCompression + 0.2;
-
-function buildMagnetosphere() {
-    clearThreeLayer('magnetosphere');
-    const layer = getThreeLayer('magnetosphere');
-    const comp = magnetoCompression, storm = stormLevel, S = 0.5;
-    const cyan = new THREE.Color(0x00ccff), cyanDim = new THREE.Color(0x2288aa);
-
-    for (let p = 0; p < 4; p++) {
-        const phi = (p / 4) * Math.PI;
-        for (let s = 0; s < 5; s++) {
-            const L = 2.0 + s * 0.7;
-            const pts = [];
-            for (let j = 0; j <= 80; j++) {
-                const theta = (j / 80) * Math.PI;
-                const r = L * Math.sin(theta) * Math.sin(theta);
-                let x = r * Math.sin(theta) * Math.cos(phi);
-                let y = r * Math.cos(theta);
-                let z = r * Math.sin(theta) * Math.sin(phi);
-                if (x > 0) x *= comp * 0.7;
-                if (x < 0) { x *= 1 + (1 - comp) * 0.8 + s * 0.15; y *= 1 - s * 0.04 * Math.min(1, Math.abs(x * S)); }
-                pts.push(new THREE.Vector3(x * S, y * S, z * S));
-            }
-            layer.add(new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints(pts),
-                new THREE.LineBasicMaterial({ color: s < 2 ? cyan : cyanDim, transparent: true, opacity: s < 2 ? 0.5 : 0.25 })
-            ));
-        }
-    }
-
-    // Bow shock
-    const bowR = BOW_STANDOFF();
-    const bowColor = storm > 0.5 ? 0xff6644 : 0x44ddff;
-    for (let m = 0; m < 4; m++) {
-        const angle = (m / 4) * Math.PI;
-        const pts = [];
-        for (let i = 0; i <= 40; i++) {
-            const t = (i / 40) * Math.PI * 0.5;
-            pts.push(new THREE.Vector3(bowR * Math.cos(t), bowR * Math.sin(t) * Math.sin(angle), bowR * Math.sin(t) * Math.cos(angle)));
-        }
-        layer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: bowColor, transparent: true, opacity: 0.4 })));
-    }
-
-    // Aurora ovals (drawn in Three.js for consistency)
-    const auroraLat = 70 - storm * 12;
-    for (const isNorth of [true, false]) {
-        const pts = [];
-        const lat = isNorth ? auroraLat : -auroraLat;
-        for (let i = 0; i <= 80; i++) pts.push(ll2v(lat, (i / 80) * 360 - 180, R * 1.008));
-        const line = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(pts),
-            new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.15 + storm * 0.5 })
-        );
-        line.name = isNorth ? 'aurora-n-1' : 'aurora-s-1';
-        layer.add(line);
-    }
-
-    // Ring current
-    const rcIntensity = Math.min(1, Math.abs(currentDst) / 100);
-    const rcMesh = new THREE.Mesh(
-        new THREE.TorusGeometry(0.25, 0.02 + storm * 0.02, 12, 48),
-        new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(0.08, 0.9, 0.4 + rcIntensity * 0.3), transparent: true, opacity: 0.06 + rcIntensity * 0.15, depthWrite: false })
-    );
-    rcMesh.rotation.x = Math.PI / 2;
-    layer.add(rcMesh);
-
-    // Reconnection
-    if (currentBz < -3) {
-        const nParts = 50;
-        reconnectionPositions = new Float32Array(nParts * 3);
-        for (let i = 0; i < nParts; i++) {
-            reconnectionPositions[i * 3] = bowR * 0.9 + Math.random() * 0.1;
-            reconnectionPositions[i * 3 + 1] = (Math.random() - 0.5) * 0.15;
-            reconnectionPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(reconnectionPositions, 3));
-        reconnectionPts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xff4488, size: 0.008, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
-        layer.add(reconnectionPts);
-    } else { reconnectionPositions = null; reconnectionPts = null; }
-}
-
-function animateReconnection() {
-    if (!reconnectionPositions) return;
-    for (let i = 0; i < reconnectionPositions.length / 3; i++) {
-        const ix = i * 3, dir = i % 2 === 0 ? 1 : -1;
-        reconnectionPositions[ix] -= 0.003;
-        reconnectionPositions[ix + 1] += dir * 0.004;
-        if (Math.abs(reconnectionPositions[ix + 1]) > 0.5 || reconnectionPositions[ix] < -0.4) {
-            reconnectionPositions[ix] = 0.5 + Math.random() * 0.15;
-            reconnectionPositions[ix + 1] = (Math.random() - 0.5) * 0.1;
-            reconnectionPositions[ix + 2] = (Math.random() - 0.5) * 0.08;
-        }
-    }
-    if (reconnectionPts) reconnectionPts.geometry.attributes.position.needsUpdate = true;
-}
 
 function updateMagnetosphereCompression(bz) {
     currentBz = bz;
     const c = bz < 0 ? Math.max(0.4, 1 + bz / 30) : 1.0;
-    if (Math.abs(c - magnetoCompression) > 0.02) { magnetoCompression = c; buildMagnetosphere(); }
+    if (Math.abs(c - magnetoCompression) > 0.02) {
+        magnetoCompression = c;
+        viewer.scene.requestRender();
+    }
 }
 
 function updateStormLevel(kp, dst) {
@@ -2214,7 +2077,6 @@ function updateStormLevel(kp, dst) {
     const newLevel = Math.max(kpLevel, dstLevel);
     if (Math.abs(newLevel - stormLevel) > 0.05) {
         stormLevel = newLevel;
-        buildMagnetosphere();
         const si = document.getElementById('storm-indicator');
         if (si) {
             si.textContent = stormLevel > 0.7 ? 'EXTREME' : stormLevel > 0.5 ? 'MAJOR' : stormLevel > 0.3 ? 'MODERATE' : stormLevel > 0.1 ? 'MINOR' : 'QUIET';
@@ -2227,155 +2089,33 @@ function updateStormLevel(kp, dst) {
     }
 }
 
-buildMagnetosphere();
-
-// --- SOLAR WIND PARTICLES ---
-const SW_MAX = 800;
-let swParticles = null, swPositions = null, swVelocities = null, swColors = null;
-
-function initParticle(i, type) {
-    const ix = i * 3;
-    const spread = type === 2 ? 0.3 : 0.7;
-    swPositions[ix] = 2 + Math.random() * 7;
-    swPositions[ix + 1] = (Math.random() - 0.5) * spread;
-    swPositions[ix + 2] = (Math.random() - 0.5) * spread;
-    const baseSpeed = 0.01 + Math.random() * 0.005;
-    const speedMult = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
-    swVelocities[ix] = -baseSpeed * speedMult;
-    swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
-    swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
-    if (type === 2) { swColors[ix] = 1.0; swColors[ix + 1] = 0.2; swColors[ix + 2] = 0.15; }
-    else if (type === 1) { swColors[ix] = 0.3; swColors[ix + 1] = 0.85; swColors[ix + 2] = 1.0; }
-    else { swColors[ix] = 1.0; swColors[ix + 1] = 0.85 + Math.random() * 0.15; swColors[ix + 2] = 0.4 + Math.random() * 0.3; }
-}
-
-function buildSolarWind() {
-    clearThreeLayer('solar-wind');
-    const layer = getThreeLayer('solar-wind');
-    const geo = new THREE.BufferGeometry();
-    swPositions = new Float32Array(SW_MAX * 3);
-    swVelocities = new Float32Array(SW_MAX * 3);
-    swColors = new Float32Array(SW_MAX * 3);
-    const electronFrac = Math.min(0.4, swElectronFlux / 5000);
-    const sepFrac = Math.min(0.2, swProtonScore * 0.2);
-    const protonFrac = 1 - electronFrac - sepFrac;
-    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));
-    for (let i = 0; i < SW_MAX; i++) {
-        const t = i / SW_MAX;
-        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
-        initParticle(i, type);
-        if (i >= activeCount) { swPositions[i * 3] = 99; swPositions[i * 3 + 1] = 99; swPositions[i * 3 + 2] = 99; }
-    }
-    geo.setAttribute('position', new THREE.BufferAttribute(swPositions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(swColors, 3));
-    swParticles = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 0.018, vertexColors: true, transparent: true, opacity: 0.85,
-        blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
-    }));
-    layer.add(swParticles);
-}
-
-function animateSolarWind() {
-    if (!swPositions) return;
-    const sf = swSpeed / 400;
-    const activeCount = Math.min(SW_MAX, Math.floor(400 + swDensity * 50));
-    const electronFrac = Math.min(0.4, swElectronFlux / 5000);
-    const sepFrac = Math.min(0.2, swProtonScore * 0.2);
-    const protonFrac = 1 - electronFrac - sepFrac;
-    for (let i = 0; i < SW_MAX; i++) {
-        if (i >= activeCount) continue;
-        const ix = i * 3;
-        const t = i / SW_MAX;
-        const type = t < protonFrac ? 0 : t < protonFrac + electronFrac ? 1 : 2;
-        swPositions[ix] += swVelocities[ix] * sf;
-        swPositions[ix + 1] += swVelocities[ix + 1];
-        swPositions[ix + 2] += swVelocities[ix + 2];
-        const dist = Math.sqrt(swPositions[ix] ** 2 + swPositions[ix + 1] ** 2 + swPositions[ix + 2] ** 2);
-        const bowDist = BOW_STANDOFF();
-        if (dist < bowDist) {
-            const nx = swPositions[ix] / dist, ny = swPositions[ix + 1] / dist, nz = swPositions[ix + 2] / dist;
-            swVelocities[ix] += nx * 0.003; swVelocities[ix + 1] += ny * 0.003; swVelocities[ix + 2] += nz * 0.003;
-        }
-        if (swPositions[ix] < -2 || dist > 12) {
-            const spread = type === 2 ? 0.3 : 0.7;
-            swPositions[ix] = 6 + Math.random() * 3;
-            swPositions[ix + 1] = (Math.random() - 0.5) * spread;
-            swPositions[ix + 2] = (Math.random() - 0.5) * spread;
-            const sm = type === 2 ? 2.5 : type === 1 ? 1.5 : 1.0;
-            swVelocities[ix] = -(0.01 + Math.random() * 0.005) * sm;
-            swVelocities[ix + 1] = (Math.random() - 0.5) * 0.001;
-            swVelocities[ix + 2] = (Math.random() - 0.5) * 0.001;
-        }
-    }
-    if (swParticles) {
-        swParticles.geometry.attributes.position.needsUpdate = true;
-        swParticles.geometry.attributes.color.needsUpdate = true;
-    }
-}
-
 function updateSolarWindData(feeds) {
     if (!feeds) return;
     const sw = feeds.solar_wind_latest || feeds;
     if (sw.speed != null) swSpeed = sw.speed;
     if (sw.density != null) swDensity = sw.density;
-    const el = feeds.electron_latest || {};
-    if (el.flux != null) swElectronFlux = el.flux;
 }
 
-buildSolarWind();
-
-// (comet removed)
-
-// --- COSMIC RAY ---
-let crActive = false, crProgress = 0, crCooldown = 0, crRate = 120;
-const crTrailPts = 20;
-const crPositions = new Float32Array(crTrailPts * 3);
-const crGeo = new THREE.BufferGeometry();
-crGeo.setAttribute('position', new THREE.BufferAttribute(crPositions, 3));
-const crLine = new THREE.Line(crGeo, new THREE.LineBasicMaterial({ color: 0xaaddff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-threeScene.add(crLine);
-let crEntry = new THREE.Vector3(), crDir = new THREE.Vector3(), crCharge = 1;
-
-function spawnGCR() {
-    const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
-    crEntry.set(5 * Math.sin(phi) * Math.cos(theta), 5 * Math.cos(phi), 5 * Math.sin(phi) * Math.sin(theta));
-    crDir.copy(crEntry).negate().normalize();
-    crDir.x += (Math.random() - 0.5) * 0.4; crDir.y += (Math.random() - 0.5) * 0.4; crDir.z += (Math.random() - 0.5) * 0.4;
-    crDir.normalize(); crCharge = Math.random() > 0.5 ? 1 : -1; crProgress = 0; crActive = true; crLine.material.opacity = 0.6;
-}
-
-function animateGCR() {
-    if (!crActive) {
-        crCooldown--;
-        if (crCooldown <= 0) { spawnGCR(); crCooldown = crRate; }
-        crLine.material.opacity *= 0.93; crGeo.attributes.position.needsUpdate = true; return;
-    }
-    crProgress++;
-    const pos = crEntry.clone().addScaledVector(crDir, crProgress * 0.08);
-    const radial = pos.clone().normalize();
-    const lorentz = new THREE.Vector3().crossVectors(crDir, radial).multiplyScalar(0.003 * crCharge / (pos.length() + 0.5));
-    crDir.add(lorentz).normalize();
-    for (let i = crTrailPts - 1; i > 0; i--) {
-        crPositions[i * 3] = crPositions[(i - 1) * 3];
-        crPositions[i * 3 + 1] = crPositions[(i - 1) * 3 + 1];
-        crPositions[i * 3 + 2] = crPositions[(i - 1) * 3 + 2];
-    }
-    crPositions[0] = pos.x; crPositions[1] = pos.y; crPositions[2] = pos.z;
-    crGeo.attributes.position.needsUpdate = true;
-    if (pos.length() < R * 1.05) { crActive = false; crLine.material.color.set(0xffffff); setTimeout(() => crLine.material.color.set(0xaaddff), 200); }
-    if (pos.length() > 8 || crProgress > 200) crActive = false;
-}
-
-function updateCRRate(crDeviation) {
-    crRate = Math.max(30, Math.floor(120 * (1 - crDeviation / 100 * 2)));
-}
 
 // ============================================================
 // SIDEBAR DATA UPDATERS (unchanged from original)
 // ============================================================
-async function fetchJSON(ep) {
-    try { return await (await fetch(`${API}${ep}`)).json(); }
-    catch (e) { return null; }
+async function fetchJSON(ep, timeoutMs = 12_000) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(`${API}${ep}`, { signal: controller.signal });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+            const message = payload?.error || payload?.detail || `HTTP ${response.status}`;
+            return { ...(payload || {}), error: String(message), status: response.status };
+        }
+        return payload;
+    } catch (error) {
+        return { error: error?.name === 'AbortError' ? 'request_timeout' : 'request_failed' };
+    } finally {
+        window.clearTimeout(timeout);
+    }
 }
 
 function drawChart(id, data, opts = {}) {
@@ -2484,11 +2224,36 @@ function updJellyBall(data) {
     if (stormEl && data.gap_pct != null) { const stormL2 = Math.max(0, 1 - Math.abs(data.gap_pct) / 30); stormEl.textContent = stormL2.toFixed(2); stormEl.style.color = stormL2 > 0.5 ? '#44ff88' : '#556'; }
     const detailEl = document.getElementById('jb-detail');
     if (detailEl) detailEl.textContent = data.phase_detail || '--';
+    const hydro = data.fault_hydromechanics;
+    const dynamic = hydro?.gofar_reference?.dynamic_cycle;
+    const brakeEl = document.getElementById('jb-gofar-brake');
+    if (brakeEl) brakeEl.textContent = dynamic?.strengthening_pct != null ? `+${dynamic.strengthening_pct.toFixed(0)}% effective stress` : '--';
+    const hydroDetailEl = document.getElementById('jb-hydro-detail');
+    if (hydroDetailEl && hydro) hydroDetailEl.textContent = hydro.global_zone_ratios_modified ? 'Global ratios recalibrated' : 'Gofar modeled reference; global ratios unchanged';
 }
 
 let nnData = null, nnPhase = 'compression';
 function updNeural(data) {
-    if (!data || data.error) return;
+    const status = document.getElementById('nn-status');
+    if (!data) {
+        if (status) status.textContent = 'Model service has not responded';
+        return;
+    }
+    if (data.error) {
+        if (status) {
+            status.textContent = neuralPollingEnabled
+                ? 'Model temporarily unavailable'
+                : 'Unavailable · trained checkpoint not deployed';
+            status.style.color = '#ffaa66';
+        }
+        const zones = document.getElementById('nn-zones');
+        if (zones) zones.innerHTML = '<div class="d" style="text-align:left;color:#75889a;">No fallback prediction is substituted. Analytical Jelly Ball indicators above remain available.</div>';
+        return;
+    }
+    if (status) {
+        status.textContent = `Trained model online${data.model?.val_mse != null ? ` · validation MSE ${data.model.val_mse}` : ''}`;
+        status.style.color = '#58e39a';
+    }
     nnData = data;
     renderNeuralZones();
     const modes = data.diagnostics?.mode_amplitudes;
@@ -2513,7 +2278,7 @@ function renderNeuralZones() {
     container.innerHTML = Object.entries(zones).map(([name, ratio]) => {
         const pct = Math.min(100, Math.max(0, (ratio - 0.2) / 4.8 * 100));
         const color = ratio > 1.5 ? '#ff4444' : ratio > 1.1 ? '#ffaa44' : ratio > 0.9 ? '#44ff44' : '#4488ff';
-        return `<div class="det-row"><span class="det-label">${name}</span><div class="det-bar-bg"><div class="det-bar" style="width:${pct}%;background:${color}"></div></div><span class="det-score" style="color:${color}">${ratio.toFixed(2)}</span></div>`;
+        return `<div class="det-row"><span class="det-label">${escapeHtml(name)}</span><div class="det-bar-bg"><div class="det-bar" style="width:${pct}%;background:${color}"></div></div><span class="det-score" style="color:${color}">${ratio.toFixed(2)}</span></div>`;
     }).join('');
 }
 
@@ -2553,8 +2318,8 @@ function updGlobalCR(d) { if (!d || d.error) return; const stEl = document.getEl
 function updTEC(d) { if (!d) return; const el = document.getElementById('tec-metric'); const det = document.getElementById('tec-detail'); if (d.available) { if (el) { el.textContent = 'LIVE'; el.className = 'm q'; } if (det) det.textContent = d.dataset || 'USTEC'; } else { if (el) { el.textContent = 'N/A'; el.className = 'm'; } if (det) det.textContent = d.note?.substring(0, 30) || 'unavailable'; } }
 function updPrecip(d) { if (!d) return; const el = document.getElementById('precip-metric'); const det = document.getElementById('precip-detail'); if (el) { el.textContent = `${d.global_precip_72h || 0} mm`; el.className = 'm ' + (d.global_precip_72h > 100 ? 'a' : 'q'); } if (det) { const thunder = d.global_thunder_hours || 0; det.textContent = `${d.n_stations || 0} sites | ${thunder} storm-hrs`; } renderWeatherMarkers(d); }
 function updLightning(d) { if (!d) return; const el = document.getElementById('lightning-metric'); const det = document.getElementById('lightning-detail'); if (el) { const clim = d.climatology; if (clim) { el.textContent = clim.month; el.style.color = '#ffaa44'; } const rt = d.realtime_thunder_hours || 0; if (rt > 0 && el) el.textContent += ` (${rt}h)`; } if (det && d.climatology?.hotspots) { const top = d.climatology.hotspots.sort((a, b) => b.mean_density - a.mean_density)[0]; det.textContent = top ? `peak: ${top.name}` : 'WWLLN climatology'; } }
-function updPorePressure(d) { if (!d?.stations) return; const container = document.getElementById('pore-bars'); if (!container) return; container.innerHTML = d.stations.map(st => { const pp = st.depth_profile?.['100m']; if (!pp) return ''; const pct = pp.pct_tectonic; const barW = Math.min(100, pct * 3000); const color = pct > 0.01 ? '#ff4444' : pct > 0.005 ? '#ffaa44' : '#44aaff'; const name = st.name.split('(')[0].trim().substring(0, 12); return `<div class="det-row"><span class="det-label">${name}</span><div class="det-bar-bg"><div class="det-bar" style="width:${barW}%;background:${color}"></div></div><span class="det-score" style="color:${color}">${pp.total_pa.toFixed(0)}</span></div>`; }).join(''); const tidalEl = document.getElementById('pp-tidal'); if (tidalEl && d.inputs) { tidalEl.textContent = d.inputs.tidal_force > 0 ? 'spring' : 'neap'; tidalEl.style.color = Math.abs(d.inputs.tidal_force) > 0.7 ? '#88aaff' : '#556'; } const jzEl = document.getElementById('pp-jz'); if (jzEl && d.inputs) jzEl.textContent = d.inputs.telluric_j_mA_km?.toFixed(1) || '--'; }
-function updCloudCharge(d) { if (!d?.stations) return; const ezEl = document.getElementById('cc-ez'); const stormEl = document.getElementById('cc-storms'); const chargeEl = document.getElementById('cc-charge'); if (ezEl) { const avgEz = d.stations.reduce((s, st) => s + (st.ez_v_m || 0), 0) / Math.max(d.stations.length, 1); ezEl.textContent = avgEz.toFixed(0); } if (stormEl) stormEl.textContent = d.active_thunderstorms || 0; if (chargeEl) chargeEl.textContent = d.global_charge_c?.toFixed(0) || '0'; const container = document.getElementById('cc-stations'); if (container) { container.innerHTML = d.stations.filter(st => st.charge_c > 0 || st.cloud_cover?.total > 50).map(st => { const cc = st.cloud_cover?.total || 0; const color = st.charge_type === 'Cb dipole' ? '#ffcc44' : st.charge_type === 'convective' ? '#ff8844' : '#4488ff'; return `<div style="display:flex;justify-content:space-between;font-size:8px;margin-bottom:1px;"><span style="color:#778;">${st.name}</span><span style="color:${color};">${st.charge_type} ${st.charge_c > 0 ? st.charge_c + 'C' : cc + '%'}</span></div>`; }).join(''); } renderCloudLayer(d); }
+function updPorePressure(d) { if (!d?.stations) return; const container = document.getElementById('pore-bars'); if (!container) return; container.innerHTML = d.stations.map(st => { const pp = st.depth_profile?.['100m']; if (!pp) return ''; const pct = pp.pct_tectonic; const barW = Math.min(100, pct * 3000); const color = pct > 0.01 ? '#ff4444' : pct > 0.005 ? '#ffaa44' : '#44aaff'; const name = String(st.name || '').split('(')[0].trim().substring(0, 12); return `<div class="det-row"><span class="det-label">${escapeHtml(name)}</span><div class="det-bar-bg"><div class="det-bar" style="width:${barW}%;background:${color}"></div></div><span class="det-score" style="color:${color}">${pp.total_pa.toFixed(0)}</span></div>`; }).join(''); const tidalEl = document.getElementById('pp-tidal'); if (tidalEl && d.inputs) { tidalEl.textContent = d.inputs.tidal_force > 0 ? 'spring' : 'neap'; tidalEl.style.color = Math.abs(d.inputs.tidal_force) > 0.7 ? '#88aaff' : '#556'; } const jzEl = document.getElementById('pp-jz'); if (jzEl && d.inputs) jzEl.textContent = d.inputs.telluric_j_mA_km?.toFixed(1) || '--'; const nucleationEl = document.getElementById('pp-nucleation'); const first100m = d.stations.find(st => st.depth_profile?.['100m'])?.depth_profile?.['100m']; if (nucleationEl && first100m?.hydromechanical_response) { const response = first100m.hydromechanical_response; nucleationEl.textContent = response.nucleation_tendency === 'promoting' ? 'effective stress down' : response.nucleation_tendency === 'inhibiting' ? 'effective stress up' : 'neutral'; nucleationEl.style.color = response.nucleation_tendency === 'promoting' ? '#ffaa44' : response.nucleation_tendency === 'inhibiting' ? '#44aaff' : '#778'; } }
+function updCloudCharge(d) { if (!d?.stations) return; const ezEl = document.getElementById('cc-ez'); const stormEl = document.getElementById('cc-storms'); const chargeEl = document.getElementById('cc-charge'); if (ezEl) { const avgEz = d.stations.reduce((s, st) => s + (st.ez_v_m || 0), 0) / Math.max(d.stations.length, 1); ezEl.textContent = avgEz.toFixed(0); } if (stormEl) stormEl.textContent = d.active_thunderstorms || 0; if (chargeEl) chargeEl.textContent = d.global_charge_c?.toFixed(0) || '0'; const container = document.getElementById('cc-stations'); if (container) { container.innerHTML = d.stations.filter(st => st.charge_c > 0 || st.cloud_cover?.total > 50).map(st => { const cc = st.cloud_cover?.total || 0; const color = st.charge_type === 'Cb dipole' ? '#ffcc44' : st.charge_type === 'convective' ? '#ff8844' : '#4488ff'; return `<div style="display:flex;justify-content:space-between;font-size:8px;margin-bottom:1px;"><span style="color:#778;">${escapeHtml(st.name)}</span><span style="color:${color};">${escapeHtml(st.charge_type)} ${st.charge_c > 0 ? st.charge_c + 'C' : cc + '%'}</span></div>`; }).join(''); } renderCloudLayer(d); }
 function updDst(data) { if (!data) return; const el = document.getElementById('dst-metric'), st = document.getElementById('st-dst'); if (data.current != null) { el.textContent = `${data.current} nT`; el.className = 'm ' + (data.current > -30 ? 'q' : data.current > -50 ? 'a' : 's'); st.textContent = `${data.current}`; st.className = 'v ' + (data.current > -30 ? 'g' : data.current > -50 ? '' : 'w'); } }
 
 // Sun image selector
@@ -2616,74 +2381,198 @@ setInterval(() => {
 document.querySelectorAll('[data-layer]').forEach(inp => {
     inp.addEventListener('change', () => setLayerVisible(inp.dataset.layer, inp.checked));
 });
-setTimeout(() => {
-    document.querySelectorAll('[data-layer]').forEach(inp => {
-        if (!inp.checked) setLayerVisible(inp.dataset.layer, false);
+if (prefersReducedMotion) {
+    document.querySelectorAll('[data-layer="wind-field"], [data-layer="ocean-currents"], [data-quick-layer="wind-field"], [data-quick-layer="ocean-currents"]').forEach(control => {
+        control.disabled = true;
+        control.title = 'Animated flow is paused by your reduced-motion preference';
     });
-}, 500);
+}
+document.querySelectorAll('[data-layer]').forEach(inp => setLayerVisible(inp.dataset.layer, inp.checked));
+
+function setLayerFromToolbar(name, visible) {
+    const checkbox = document.querySelector(`[data-layer="${name}"]`);
+    if (checkbox) checkbox.checked = visible;
+    setLayerVisible(name, visible);
+}
+
+let neuralPollingEnabled = true;
+async function fetchNeuralPrediction() {
+    if (!neuralPollingEnabled) return null;
+    const data = await fetchJSON('/jellyball/neural');
+    const error = String(data?.error || data?.detail || '').toLowerCase();
+    if (error.includes('not available') || error.includes('not trained') || error.includes('checkpoint')) {
+        neuralPollingEnabled = false;
+    }
+    return data;
+}
+
+document.querySelectorAll('[data-quick-layer]').forEach(button => {
+    button.addEventListener('click', () => {
+        const name = button.dataset.quickLayer;
+        const next = button.getAttribute('aria-pressed') !== 'true';
+        if (next && name === 'ocean-currents') setLayerFromToolbar('wind-field', false);
+        if (next && name === 'wind-field') setLayerFromToolbar('ocean-currents', false);
+        setLayerFromToolbar(name, next);
+    });
+});
+
+const sidebar = document.getElementById('sidebar');
+const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarClose = document.getElementById('close-sidebar');
+let sidebarReturnFocus = sidebarToggle;
+const setSidebarOpen = (open, moveFocus = true) => {
+    if (!sidebar) return;
+    if (open) sidebarReturnFocus = document.activeElement;
+    sidebar.classList.toggle('closed', !open);
+    sidebar.inert = !open;
+    sidebar.setAttribute('aria-hidden', String(!open));
+    sidebarToggle?.setAttribute('aria-expanded', String(open));
+    if (!moveFocus) return;
+    if (open) sidebarClose?.focus();
+    else if (sidebarReturnFocus instanceof HTMLElement) sidebarReturnFocus.focus();
+};
+sidebarClose?.addEventListener('click', () => setSidebarOpen(false));
+sidebarToggle?.addEventListener('click', () => setSidebarOpen(true));
+document.getElementById('close-detail')?.addEventListener('click', () => {
+    const detail = document.getElementById('detail');
+    if (detail) detail.style.display = 'none';
+});
+document.getElementById('open-layers')?.addEventListener('click', () => {
+    setSidebarOpen(true);
+    document.querySelectorAll('.sec')[2]?.scrollIntoView({ block: 'start', behavior: prefersReducedMotion ? 'auto' : 'smooth' });
+});
+document.querySelectorAll('.sec h2').forEach((heading, index) => {
+    const content = document.createElement('div');
+    content.id = `section-content-${index}`;
+    while (heading.nextSibling) content.appendChild(heading.nextSibling);
+    heading.parentElement.appendChild(content);
+    heading.setAttribute('role', 'button');
+    heading.setAttribute('tabindex', '0');
+    heading.setAttribute('aria-controls', content.id);
+    heading.setAttribute('aria-expanded', 'true');
+    const toggle = () => {
+        const collapsed = heading.parentElement.classList.toggle('collapsed');
+        heading.setAttribute('aria-expanded', String(!collapsed));
+    };
+    heading.addEventListener('click', toggle);
+    heading.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+    });
+    if (index === 1 || index === 3) toggle();
+});
+if (window.innerWidth < 760) setSidebarOpen(false, false);
+
+window.__flowDiagnostics = {
+    oceanParticleCap: 1000,
+    oceanFramesPerSecond: prefersReducedMotion ? 0 : 30,
+    windFramesPerSecond: prefersReducedMotion ? 0 : 24,
+    devicePixelRatioCap: 1.5,
+    hiddenTabDelayMs: 1000,
+};
 
 // ============================================================
 // MAIN POLL
 // ============================================================
-async function poll() {
+function settledValue(results, index, allowError = false) {
+    const result = results[index];
+    if (result?.status !== 'fulfilled') return null;
+    if (!allowError && result.value?.error) return null;
+    return result.value;
+}
+
+let corePollPending = false;
+async function pollCore() {
+    if (corePollPending) return;
+    corePollPending = true;
+    try {
     const results = await Promise.allSettled([
         fetchJSON('/earthquakes'),     // 0
-        fetchJSON('/subsolar'),        // 1
-        fetchJSON('/kp'),              // 2
-        fetchJSON('/solar_wind'),      // 3
-        fetchJSON('/xrs'),             // 4
-        fetchJSON('/sun'),             // 5
-        fetchJSON('/lunar'),           // 6
-        fetchJSON('/cosmic_rays'),     // 7
-        fetchJSON('/dst'),             // 8
-        fetchJSON('/magnetometers'),   // 9
-        fetchJSON('/field_strengths'),       // 10
-        fetchJSON('/seismic/waveform'),      // 11
-        fetchJSON('/jellyball/prediction'),  // 12
-        fetchJSON('/jellyball/neural'),      // 13
-        fetchJSON('/cosmic_rays_global'),    // 14
-        fetchJSON('/tec'),                   // 15
-        fetchJSON('/precipitation'),         // 16
-        fetchJSON('/lightning'),             // 17
-        fetchJSON('/pore_pressure'),         // 18
-        fetchJSON('/cloud_charge'),          // 19
-        fetchJSON('/magnetic_anomalies'),    // 20
-        fetchJSON('/ocean_light_phenomena'), // 21
+        fetchJSON('/kp'),              // 1
+        fetchJSON('/solar_wind'),      // 2
+        fetchJSON('/xrs'),             // 3
+        fetchJSON('/dst'),             // 4
+        fetchJSON('/jellyball/prediction'),  // 5
     ]);
-    const v = i => results[i]?.value;
+    const v = index => settledValue(results, index);
     if (v(0)) updateEarthquakes(v(0));
-    if (v(1)) { updateSubsolar(v(1)); updateJellyBall(v(1)); updateTerminator(v(1)); buildMagneticField(v(1)); buildSolarWindFlow(v(1)); }
-    if (v(2)) updKp(v(2));
-    if (v(3)) {
-        updSW(v(3));
-        if (v(3).current_speed) swSpeed = v(3).current_speed;
-        if (v(3).current_density) swDensity = v(3).current_density;
-        if (v(3).current_bz != null) updateMagnetosphereCompression(v(3).current_bz);
+    if (v(1)) updKp(v(1));
+    if (v(2)) {
+        updSW(v(2));
+        if (v(2).current_speed) swSpeed = v(2).current_speed;
+        if (v(2).current_density) swDensity = v(2).current_density;
+        if (v(2).current_bz != null) updateMagnetosphereCompression(v(2).current_bz);
     }
-    if (v(4)) updXRS(v(4));
-    if (v(5)) updSun(v(5));
-    if (v(6)) updLunar(v(6));
-    if (v(7)) updCR(v(7));
-    if (v(8)) updDst(v(8));
-    if (v(9)) updateMagnetometers(v(9));
-    if (v(10)) { updFieldStrengths(v(10)); buildTelluricCurrents(v(10)); }
-    if (v(11)) drawSeismogram(v(11));
-    if (v(12)) updJellyBall(v(12));
-    if (v(13)) updNeural(v(13));
-    if (v(14)) { updGlobalCR(v(14)); if (v(14).global_mean != null) updateCRRate(v(14).global_mean); }
-    if (v(15)) updTEC(v(15));
-    if (v(16)) updPrecip(v(16));
-    if (v(17)) updLightning(v(17));
-    if (v(18)) updPorePressure(v(18));
-    if (v(19)) updCloudCharge(v(19));
-    if (v(20)) updateMagneticAnomalies(v(20));
-    if (v(21)) updateOceanLightPhenomena(v(21));
-    const kpVal = v(2)?.current ?? currentKp;
-    const dstVal = v(8)?.current ?? currentDst;
+    if (v(3)) updXRS(v(3));
+    if (v(4)) updDst(v(4));
+    if (v(5)) updJellyBall(v(5));
+    const kpVal = v(1)?.current ?? currentKp;
+    const dstVal = v(4)?.current ?? currentDst;
     updateStormLevel(kpVal, dstVal);
+    } finally {
+        corePollPending = false;
+    }
 }
-poll();
-setInterval(poll, POLL);
+
+let contextPollPending = false;
+async function pollModelContext() {
+    if (contextPollPending) return;
+    contextPollPending = true;
+    try {
+    const results = await Promise.allSettled([
+        fetchJSON('/subsolar'),
+        fetchJSON('/sun'),
+        fetchJSON('/lunar'),
+        fetchJSON('/cosmic_rays'),
+        fetchJSON('/field_strengths'),
+        fetchNeuralPrediction(),
+    ]);
+    const v = index => settledValue(results, index);
+    if (v(0)) { updateSubsolar(v(0)); updateJellyBall(v(0)); updateTerminator(v(0)); buildMagneticField(v(0)); buildSolarWindFlow(v(0)); }
+    if (v(1)) updSun(v(1));
+    if (v(2)) updLunar(v(2));
+    if (v(3)) updCR(v(3));
+    if (v(4)) { updFieldStrengths(v(4)); buildTelluricCurrents(v(4)); }
+    const neural = settledValue(results, 5, true);
+    if (neural) updNeural(neural);
+    } finally {
+        contextPollPending = false;
+    }
+}
+
+let environmentPollPending = false;
+async function pollEnvironment() {
+    if (environmentPollPending) return;
+    environmentPollPending = true;
+    try {
+    const results = await Promise.allSettled([
+        fetchJSON('/magnetometers'), fetchJSON('/seismic/waveform'),
+        fetchJSON('/cosmic_rays_global'), fetchJSON('/tec'),
+        fetchJSON('/precipitation'), fetchJSON('/lightning'),
+        fetchJSON('/pore_pressure'), fetchJSON('/cloud_charge'),
+        fetchJSON('/magnetic_anomalies'), fetchJSON('/ocean_light_phenomena'),
+    ]);
+    const v = index => settledValue(results, index);
+    if (v(0)) updateMagnetometers(v(0));
+    if (v(1)) drawSeismogram(v(1));
+    if (v(2)) updGlobalCR(v(2));
+    if (v(3)) updTEC(v(3));
+    if (v(4)) updPrecip(v(4));
+    if (v(5)) updLightning(v(5));
+    if (v(6)) updPorePressure(v(6));
+    if (v(7)) updCloudCharge(v(7));
+    if (v(8)) updateMagneticAnomalies(v(8));
+    if (v(9)) updateOceanLightPhenomena(v(9));
+    } finally {
+        environmentPollPending = false;
+    }
+}
+
+pollCore();
+scheduleIdle(pollModelContext, 600);
+scheduleIdle(pollEnvironment, 1800);
+setInterval(pollCore, POLL);
+setInterval(pollModelContext, 60_000);
+setInterval(pollEnvironment, 120_000);
 
 // ============================================================
 // SOLAR MONITOR INTEGRATION
@@ -2691,17 +2580,64 @@ setInterval(poll, POLL);
 const DET_NAMES = ['zscore', 'cusum', 'hardness', 'rate', 'multichannel', 'proton', 'criticality'];
 function scoreColor(score) { return score < 0.3 ? '#44ff44' : score < 0.5 ? '#aaff44' : score < 0.7 ? '#ffaa44' : '#ff4444'; }
 
+let solarConnected = false;
+function updateSolarAvailability(quality) {
+    if (!quality) return;
+    const ready = quality.alerting_ready === true;
+    const status = String(quality.status || (ready ? 'ok' : 'unavailable')).toUpperCase();
+    const age = quality.xray?.age_seconds;
+    const ageText = typeof age === 'number' ? (age < 120 ? `${age}s old` : `${Math.round(age / 60)}m old`) : 'no XRS timestamp';
+    const source = quality.xray?.source || 'NOAA SWPC GOES XRS';
+    const freshness = document.getElementById('solar-freshness');
+    if (freshness) {
+        freshness.textContent = `${status} · ${source} · ${ageText}`;
+        freshness.style.color = ready ? (status === 'DEGRADED' ? '#fb4' : '#6b8') : '#f66';
+    }
+    const dot = document.getElementById('solar-conn');
+    if (dot) dot.className = `conn-dot ${solarConnected && ready ? 'live' : 'dead'}`;
+    const label = document.getElementById('solar-status');
+    if (label) label.textContent = ready ? (solarConnected ? '(LIVE)' : '(polling)') : `(${status})`;
+    const panel = document.getElementById('detector-panel');
+    if (panel) panel.style.opacity = ready ? '1' : '0.55';
+    if (!ready) {
+        DET_NAMES.forEach(name => {
+            const bar = document.getElementById(`det-${name}`);
+            const score = document.getElementById(`ds-${name}`);
+            if (bar) bar.style.width = '0%';
+            if (score) score.textContent = '--';
+        });
+        const fusedFill = document.getElementById('fused-fill');
+        const fusedLabel = document.getElementById('fused-label');
+        const agreement = document.getElementById('det-agreement');
+        if (fusedFill) fusedFill.style.width = '0%';
+        if (fusedLabel) fusedLabel.textContent = 'FUSED: unavailable';
+        if (agreement) agreement.textContent = '--';
+        const esc = document.getElementById('esc-state');
+        if (esc) { esc.textContent = 'NO DATA'; esc.className = 'esc-badge esc-quiet'; }
+        const detail = document.getElementById('esc-detail');
+        if (detail) detail.textContent = 'Alerts inhibited until fresh X-ray observations arrive';
+    }
+}
+
 function updDetectors(data) {
     if (!data || data.error) return;
+    const quality = data.data_quality;
+    if (quality) updateSolarAvailability(quality);
+    if (quality && !quality.alerting_ready) return;
     const diag = data.fusion_diagnostics || data;
     const detectors = diag.raw_scores || diag.detectors || [];
     if (Array.isArray(detectors)) {
         detectors.forEach(d => {
             const name = (d.name || '').toLowerCase().replace(/[_\s-]/g, '');
             const matchName = DET_NAMES.find(n => name.includes(n)) || name;
-            const val = d.percentile_rank ?? d.score ?? d.raw_score ?? null;
             const bar = document.getElementById(`det-${matchName}`);
             const scoreEl = document.getElementById(`ds-${matchName}`);
+            if (d.available === false) {
+                if (bar) bar.style.width = '0%';
+                if (scoreEl) scoreEl.textContent = '--';
+                return;
+            }
+            const val = d.percentile_rank ?? d.score ?? d.raw_score ?? null;
             if (bar && val != null) { bar.style.width = Math.min(100, val * 100) + '%'; bar.style.background = scoreColor(val); }
             if (scoreEl && val != null) scoreEl.textContent = val.toFixed(2);
         });
@@ -2720,6 +2656,9 @@ function updDetectors(data) {
 
 function updEscalation(data) {
     if (!data || data.error) return;
+    if (data.data_quality) updateSolarAvailability(data.data_quality);
+    if (data.data_quality && !data.data_quality.alerting_ready) return;
+    data = data.escalation || data;
     const level = (data.level_label || data.level || data.state || 'quiet').toLowerCase();
     const el = document.getElementById('esc-state');
     if (el) { el.textContent = level.toUpperCase(); el.className = 'esc-badge esc-' + level; }
@@ -2734,6 +2673,16 @@ const PW_COLORS = { forbush: '#6644ff', heep: '#44ffaa', ssc: '#ff44aa', mansuro
 
 function updPathways(data) {
     if (!data || data.error) return;
+    if (data.data_quality) updateSolarAvailability(data.data_quality);
+    if (data.data_quality && !data.data_quality.alerting_ready) {
+        const stressEl = document.getElementById('stress-val');
+        if (stressEl) { stressEl.textContent = '--'; stressEl.style.color = '#778'; }
+        const panel = document.getElementById('pathway-panel');
+        if (panel) panel.style.opacity = '0.55';
+        return;
+    }
+    const panel = document.getElementById('pathway-panel');
+    if (panel) panel.style.opacity = '1';
     const stressor = data.stressor || data;
     const pathways = stressor.pathways || (Array.isArray(data) ? data : []);
     let totalStress = 0;
@@ -2759,35 +2708,62 @@ function updPathways(data) {
 }
 
 // SSE Streams
-let solarConnected = false;
 function connectSSE() {
     try {
         const sse = new EventSource(`${SOLAR_API}/metrics`);
-        sse.onopen = () => { solarConnected = true; const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live'; const st = document.getElementById('solar-status'); if (st) st.textContent = '(LIVE)'; };
-        sse.onmessage = e => { try { const d = JSON.parse(e.data); if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d); if (d.escalation) updEscalation(d.escalation); else if (d.level || d.level_label) updEscalation(d); if (d.stressor?.pathways) updPathways(d.stressor); else if (d.pathways || Array.isArray(d)) updPathways(d); if (d.feeds?.imf_bz != null) updateMagnetosphereCompression(d.feeds.imf_bz); } catch (_) { } };
+        sse.onopen = () => { solarConnected = true; const st = document.getElementById('solar-status'); if (st) st.textContent = '(connected; awaiting data)'; };
+        const handleMetrics = e => { try {
+            const d = JSON.parse(e.data);
+            if (d.data_quality) updateSolarAvailability(d.data_quality);
+            if (d.fusion_diagnostics || d.fused_score != null || d.raw_scores) updDetectors(d);
+            if (d.escalation) updEscalation({ escalation: d.escalation, data_quality: d.data_quality });
+            else if (d.level || d.level_label) updEscalation(d);
+            if (d.stressor?.pathways) updPathways({ ...d.stressor, data_quality: d.data_quality });
+            else if (d.pathways || Array.isArray(d)) updPathways(d);
+            if (d.bz != null) updateMagnetosphereCompression(d.bz);
+        } catch (_) { } };
+        // Axum emits named "metrics" events; onmessage only receives unnamed events.
+        sse.addEventListener('metrics', handleMetrics);
+        sse.onmessage = handleMetrics;
+        sse.addEventListener('availability', e => { try { const d = JSON.parse(e.data); updateSolarAvailability({ status: 'unavailable', alerting_ready: false, ...d }); } catch (_) { } });
         sse.onerror = () => { solarConnected = false; const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot dead'; const st = document.getElementById('solar-status'); if (st) st.textContent = '(polling)'; };
     } catch (_) { }
     try {
         const alerts = new EventSource(`${SOLAR_API}/alerts`);
-        alerts.onmessage = e => { try { const a = JSON.parse(e.data); const banner = document.getElementById('alert-banner'); if (!banner) return; const type = a.type || a.kind || '', msg = a.message || a.msg || JSON.stringify(a); banner.textContent = `${type.toUpperCase()}: ${msg}`; banner.style.display = 'block'; banner.style.background = type.includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)'; setTimeout(() => { banner.style.display = 'none'; }, 15000); } catch (_) { } };
+        const handleAlert = e => { try {
+            const a = JSON.parse(e.data);
+            if (a.data_status === 'stale' || a.data_status === 'starting' || a.alerting_ready === false) return;
+            const banner = document.getElementById('alert-banner'); if (!banner) return;
+            const type = a.alert_type || a.type || a.kind || 'solar_alert', msg = a.message || a.msg || JSON.stringify(a);
+            banner.textContent = `${String(type).replaceAll('_', ' ').toUpperCase()}: ${msg}`;
+            banner.style.display = 'block';
+            banner.style.background = String(type).includes('flare') ? 'rgba(255,50,50,0.95)' : 'rgba(40,160,255,0.95)';
+            setTimeout(() => { banner.style.display = 'none'; }, 15000);
+        } catch (_) { } };
+        alerts.addEventListener('alert', handleAlert);
+        alerts.onmessage = handleAlert;
     } catch (_) { }
 }
 connectSSE();
 
 async function pollSolar() {
     try {
-        const [statusResp, feedsResp] = await Promise.all([fetch(`${SOLAR_API}/status`), fetch(`${SOLAR_API}/feeds`)]);
+        const [statusResp, feedsResp, healthResp] = await Promise.all([
+            fetch(`${SOLAR_API}/status`),
+            fetch(`${SOLAR_API}/feeds`),
+            fetch(`${SOLAR_API}/health`),
+        ]);
         const status = await statusResp.json();
         const feeds = await feedsResp.json();
-        if (status && !status.error) {
+        const health = await healthResp.json();
+        if (health?.data_quality) updateSolarAvailability(health.data_quality);
+        if (statusResp.ok && status && !status.error) {
             updDetectors(status);
-            if (status.escalation) updEscalation(status.escalation);
-            if (status.stressor) updPathways(status.stressor);
-            if (feeds && !feeds.error) updateSolarWindData(feeds);
+            if (status.escalation) updEscalation({ escalation: status.escalation, data_quality: status.data_quality });
+            if (status.stressor) updPathways({ ...status.stressor, data_quality: status.data_quality });
+            if (feedsResp.ok && feeds && !feeds.error) updateSolarWindData(feeds);
             const protonDet = status.fusion_diagnostics?.raw_scores?.find(d => d.name === 'proton');
             if (protonDet) swProtonScore = protonDet.percentile_rank;
-            const dot = document.getElementById('solar-conn'); if (dot) dot.className = 'conn-dot live';
-            const st = document.getElementById('solar-status'); if (st) st.textContent = solarConnected ? '(LIVE)' : '(polling)';
             return;
         }
     } catch (_) { }

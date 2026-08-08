@@ -17,7 +17,7 @@ services:
       - global-resonance-data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/plates"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/plates >/dev/null && curl -fsS http://127.0.0.1:8000/api/solar/live >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

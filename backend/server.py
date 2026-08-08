@@ -15,10 +15,21 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 import asyncio
 import os
+
+try:
+    from .fault_hydromechanics import (
+        jellyball_hydromechanics_payload,
+        pore_pressure_response,
+    )
+except ImportError:  # server.py is commonly launched from backend/
+    from fault_hydromechanics import (
+        jellyball_hydromechanics_payload,
+        pore_pressure_response,
+    )
 
 app = FastAPI(
     title="Global Resonance API",
@@ -36,6 +47,11 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+try:
+    from research_model_context import cascadia_nsaf_advisories, research_model_context
+except ImportError:  # supports `uvicorn backend.server:app` from the repository root
+    from backend.research_model_context import cascadia_nsaf_advisories, research_model_context
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 CACHE = {}  # simple in-memory cache with TTL
@@ -138,9 +154,10 @@ def lunar_phase(dt=None):
     ref = datetime(2000, 1, 6, tzinfo=timezone.utc)
     days = (dt - ref).total_seconds() / 86400
     phase = (days % 29.53059) / 29.53059
+    illumination = (1 - math.cos(2 * math.pi * phase)) * 50
     return {
         "phase": round(phase, 4),
-        "illumination": round(phase * 100, 1),
+        "illumination": round(illumination, 1),
         "tidal_force": round(math.cos(2 * math.pi * phase), 4),
         "tidal_rate": round(-math.sin(2 * math.pi * phase), 4),
         "days_to_full": round(((0.5 - phase) % 1.0) * 29.53059, 1),
@@ -218,7 +235,18 @@ def get_earthquakes(hours: int = 72, min_mag: float = 4.5, limit: int = 500):
         except Exception:
             pass
 
-    return {"earthquakes": eqs, "subsolar": ss, "count": len(eqs)}
+    return {
+        "earthquakes": eqs,
+        "subsolar": ss,
+        "count": len(eqs),
+        "compound_fault_advisories": cascadia_nsaf_advisories(eqs),
+    }
+
+
+@app.get("/api/research/model-context")
+def get_research_model_context():
+    """Source-audited boundaries for recent fault, solar, and core results."""
+    return research_model_context()
 
 
 @app.get("/api/solar_wind")
@@ -883,6 +911,7 @@ def get_jellyball_prediction():
             "bz": round(bz, 1),
             "v_sw": round(v_sw, 0),
         },
+        "fault_hydromechanics": jellyball_hydromechanics_payload(),
     }
 
 
@@ -1317,7 +1346,9 @@ def get_ocean_currents():
     lon_min, lon_max = -180, 180
 
     try:
-        with httpx.Client(timeout=25) as client:
+        # CoastWatch rejects anonymous/default HTTP clients with 403. Identify
+        # this research dashboard consistently, as the other NOAA feeds do.
+        with httpx.Client(timeout=25, headers={"User-Agent": "GlobalResonance/1.0"}) as client:
             das = client.get(f"{base}.das")
             if das.status_code == 200:
                 for line in das.text.splitlines():
@@ -1692,6 +1723,8 @@ def get_pore_pressure():
                 "tidal_pa": round(tidal_stress_pa, 2),
                 "total_pa": round(p_total, 2),
                 "pct_tectonic": round(frac * 100, 5),
+                "effective_normal_stress_change_pa": round(-p_total, 2),
+                "hydromechanical_response": pore_pressure_response(p_total / 1e6),
             }
 
         stations.append({
@@ -1714,6 +1747,8 @@ def get_pore_pressure():
             "diffusivity_m2s": D_default,
             "surface_B_uT": 50,
             "tectonic_stress_MPa": 1,
+            "sign_convention": "delta sigma_eff = -delta pore pressure",
+            "rupture_propagation": "requires a calibrated local barrier profile",
         },
     }
 
@@ -2238,14 +2273,35 @@ SOLAR_MONITOR_URL = os.environ.get("SOLAR_MONITOR_URL", "http://localhost:8089")
 
 
 async def _solar_proxy(path: str):
-    """Proxy a GET request to the solar monitor."""
+    """Proxy JSON without disguising upstream failures as HTTP 200."""
     url = f"{SOLAR_MONITOR_URL}/api/solar/{path}"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url)
-            return resp.json()
-    except Exception as e:
-        return {"error": str(e), "source": url}
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {
+                    "error": "solar monitor returned a non-JSON response",
+                    "source": url,
+                    "upstream_status": resp.status_code,
+                }
+            return JSONResponse(
+                content=payload,
+                status_code=resp.status_code,
+                headers={"X-Data-Source": "solar-monitor"},
+            )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "solar monitor unavailable",
+                "detail": str(exc),
+                "source": url,
+                "alerting_ready": False,
+            },
+            headers={"X-Data-Source": "solar-monitor"},
+        )
 
 
 @app.get("/api/solar/status")
@@ -2286,8 +2342,14 @@ async def solar_feed(feed_name: str):
 
 @app.get("/api/solar/health")
 async def solar_health():
-    """Feed freshness check."""
+    """Alert readiness: fresh XRS plus detector warmup."""
     return await _solar_proxy("health")
+
+
+@app.get("/api/solar/live")
+async def solar_live():
+    """Solar-monitor process liveness, independent of upstream freshness."""
+    return await _solar_proxy("live")
 
 
 @app.get("/api/solar/state")
@@ -2302,15 +2364,27 @@ async def _sse_proxy(path: str):
 
     async def event_generator():
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
+            timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("GET", url) as resp:
-                    async for line in resp.aiter_lines():
-                        yield line + "\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                    if resp.status_code >= 400:
+                        yield (
+                            "event: availability\n"
+                            f"data: {json.dumps({'error': 'solar monitor stream unavailable', 'upstream_status': resp.status_code, 'source': url, 'alerting_ready': False})}\n\n"
+                        )
+                        return
+                    # Forward decoded chunks so named-event framing and blank-line
+                    # boundaries survive the proxy unchanged.
+                    async for chunk in resp.aiter_text():
+                        yield chunk
+        except httpx.HTTPError as exc:
+            yield (
+                "event: availability\n"
+                f"data: {json.dumps({'error': str(exc), 'source': url, 'alerting_ready': False})}\n\n"
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/solar/metrics")

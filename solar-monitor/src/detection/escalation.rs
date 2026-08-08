@@ -1,11 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-/// Monitoring escalation level based on precursor activity.
+/// Escalation level based on observed X-ray anomaly activity.
 ///
-/// The hardness ratio detector catches sympathetic micro-flares from
-/// active regions hours before major events. This state machine
-/// tracks escalation from quiet → elevated → active → flare.
+/// These experimental detector levels organize monitoring attention. They are
+/// not calibrated probabilities or deterministic flare forecasts.
 ///
 /// Transitions:
 /// - Quiet → Elevated: single hardness spike (score > 0.5)
@@ -15,8 +14,8 @@ use serde::Serialize;
 /// - Any → Quiet: no hardness spikes for `cooldown_minutes` AND
 ///   fused score below 0.3 for `cooldown_minutes`
 ///
-/// Validated against real GOES data: hardness precursors appeared
-/// -63min before M1.1 and -65min before X1.5 (2026-03-28/30).
+/// Two case-study events motivated the hardness indicator; that small sample is
+/// not sufficient to claim general predictive skill.
 #[derive(Debug, Clone)]
 pub struct EscalationMonitor {
     pub level: EscalationLevel,
@@ -45,15 +44,11 @@ pub struct EscalationMonitor {
 pub enum EscalationLevel {
     /// No significant solar activity. Background monitoring.
     Quiet,
-    /// Single precursor detected. Active region may be developing.
-    /// Recommended: increase polling frequency.
+    /// A hardness anomaly was observed.
     Elevated,
-    /// Repeated precursor activity. Active region is producing
-    /// sympathetic micro-flares. Major event likely within hours.
-    /// Recommended: alert operators, begin continuous monitoring.
+    /// Repeated or fused anomaly activity was observed.
     Active,
-    /// Multi-detector consensus: flare in progress or imminent.
-    /// Recommended: issue alert, activate coupling pathways.
+    /// Multi-detector consensus on an observed X-ray anomaly.
     Flare,
 }
 
@@ -136,12 +131,7 @@ impl EscalationMonitor {
         )
     }
 
-    /// Update with X-ray flux and criticality score for predictive escalation.
-    ///
-    /// The criticality score provides a *predictive* escalation path:
-    /// sustained criticality > 0.6 triggers Quiet→Elevated even before
-    /// any hardness spike occurs. This is the 6+ hour early warning from
-    /// the Clifford lattice's approach to J_c.
+    /// Update with X-ray flux and the experimental criticality diagnostic.
     pub fn update_with_flux(
         &mut self,
         hardness_score: f64,
@@ -167,7 +157,7 @@ impl EscalationMonitor {
         fused_score: f64,
         detector_agreement: usize,
         xray_flux: f64,
-        criticality_score: f64,
+        _criticality_score: f64,
         timestamp: DateTime<Utc>,
     ) -> Option<EscalationTransition> {
         // Track hardness spikes
@@ -180,11 +170,6 @@ impl EscalationMonitor {
         // the 0.3-0.5 band with zero anomalies, which kept last_activity
         // permanently fresh and locked the state machine in FLARE.
         if fused_score > 0.5 {
-            self.last_activity = Some(timestamp);
-        }
-        // Sustained criticality counts as activity — the lattice sees
-        // approach to J_c before statistical detectors fire.
-        if criticality_score > 0.5 {
             self.last_activity = Some(timestamp);
         }
         // Elevated X-ray background counts as activity
@@ -208,7 +193,7 @@ impl EscalationMonitor {
         let spikes_in_window = self.hardness_spikes.len();
         let old_level = self.level;
 
-        // State transitions — criticality score provides a PREDICTIVE path
+        // State transitions require observed hardness or multi-detector fusion.
         match self.level {
             EscalationLevel::Quiet => {
                 if detector_agreement >= 2 && fused_score > 0.7 {
@@ -217,10 +202,6 @@ impl EscalationMonitor {
                     self.flare_triggers = 1;
                 } else if hardness_score > 0.5 {
                     self.level = EscalationLevel::Elevated;
-                } else if criticality_score > 0.6 {
-                    // PREDICTIVE: Clifford lattice detects approach to J_c
-                    // before any statistical detector fires.
-                    self.level = EscalationLevel::Elevated;
                 }
             }
             EscalationLevel::Elevated => {
@@ -228,10 +209,6 @@ impl EscalationMonitor {
                     self.level = EscalationLevel::Flare;
                     self.flare_triggers = 1;
                 } else if spikes_in_window >= self.spike_threshold || fused_score > 0.5 {
-                    self.level = EscalationLevel::Active;
-                } else if criticality_score > 0.7 {
-                    // PREDICTIVE: sustained high criticality → Active
-                    // without waiting for repeated hardness spikes.
                     self.level = EscalationLevel::Active;
                 } else if self.should_cooldown(timestamp) {
                     self.reset_to_quiet();
@@ -263,11 +240,6 @@ impl EscalationMonitor {
                 EscalationLevel::Elevated => {
                     if old_level == EscalationLevel::Active || old_level == EscalationLevel::Flare {
                         "De-escalating: activity subsiding".into()
-                    } else if criticality_score > 0.6 && hardness_score <= 0.5 {
-                        format!(
-                            "Criticality detector: lattice approaching J_c (score {:.3})",
-                            criticality_score
-                        )
                     } else {
                         format!("Hardness spike detected (score {:.3})", hardness_score)
                     }
@@ -275,11 +247,6 @@ impl EscalationMonitor {
                 EscalationLevel::Active => {
                     if old_level == EscalationLevel::Flare {
                         "Post-flare: monitoring active region".into()
-                    } else if criticality_score > 0.7 && spikes_in_window < self.spike_threshold {
-                        format!(
-                            "Criticality detector: sustained J ≈ J_c (score {:.3})",
-                            criticality_score
-                        )
                     } else {
                         format!(
                             "{} hardness spikes in {}h window — active region developing",
@@ -369,6 +336,14 @@ mod tests {
         let mut m = EscalationMonitor::new();
         let t = m.update(0.0, 0.1, 0, ts(0));
         assert!(t.is_none());
+        assert_eq!(m.level, EscalationLevel::Quiet);
+    }
+
+    #[test]
+    fn experimental_criticality_cannot_escalate_by_itself() {
+        let mut m = EscalationMonitor::new();
+        let transition = m.update_full(0.0, 0.1, 0, 5e-7, 0.99, ts(0));
+        assert!(transition.is_none());
         assert_eq!(m.level, EscalationLevel::Quiet);
     }
 

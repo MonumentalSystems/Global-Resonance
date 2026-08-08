@@ -15,7 +15,11 @@ frontend/dist/
 
 # Output
 backend/output/
+target/
+**/target/
 *.png
+*.log
+*-backup.*
 
 # OS
 .DS_Store

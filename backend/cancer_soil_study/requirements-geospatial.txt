@@ -1,0 +1,4 @@
+numpy>=1.24,<2.4
+geopandas>=1.0
+rasterio>=1.4
+pyogrio>=0.10

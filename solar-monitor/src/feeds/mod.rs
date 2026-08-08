@@ -47,6 +47,9 @@ pub struct FeedState {
     /// SHARP magnetogram parameters, 12-min cadence (~3h latency).
     /// Keyed by HARP number — stores latest for each active region.
     pub sharp: Vec<sharp::SharpRecord>,
+    /// Last poll attempt, including attempts where every upstream failed.
+    pub last_poll: Option<DateTime<Utc>>,
+    /// Last poll where at least one upstream returned observations.
     pub last_update: Option<DateTime<Utc>>,
     pub errors: Vec<FeedError>,
 }
@@ -61,6 +64,7 @@ impl FeedState {
             solar_wind: VecDeque::with_capacity(MAX_RING_SIZE),
             kp_dst: VecDeque::with_capacity(MAX_RING_SIZE),
             sharp: Vec::new(),
+            last_poll: None,
             last_update: None,
             errors: Vec::new(),
         }
@@ -103,6 +107,162 @@ impl FeedState {
     }
 }
 
+/// Provenance and observation-age metadata for one upstream feed.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedFreshness {
+    pub source: &'static str,
+    pub sample_time: Option<DateTime<Utc>>,
+    pub age_seconds: Option<i64>,
+    pub max_age_seconds: i64,
+    pub fresh: bool,
+    pub sample_count: usize,
+}
+
+impl FeedFreshness {
+    fn new(
+        source: &'static str,
+        sample_time: Option<DateTime<Utc>>,
+        max_age_seconds: i64,
+        sample_count: usize,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let age_seconds = sample_time.map(|time| (now - time).num_seconds().max(0));
+        let fresh = age_seconds
+            .map(|age| age <= max_age_seconds)
+            .unwrap_or(false);
+        Self {
+            source,
+            sample_time,
+            age_seconds,
+            max_age_seconds,
+            fresh,
+            sample_count,
+        }
+    }
+}
+
+/// Alert-pipeline readiness derived from source observation times, not poll time.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedQuality {
+    pub status: &'static str,
+    pub feed_ready: bool,
+    pub alerting_ready: bool,
+    pub detector_ready: bool,
+    pub detector_samples: usize,
+    pub detector_samples_required: usize,
+    pub evaluated_at: DateTime<Utc>,
+    pub last_poll: Option<DateTime<Utc>>,
+    pub last_successful_fetch: Option<DateTime<Utc>>,
+    pub xray: FeedFreshness,
+    pub xray_short: FeedFreshness,
+    pub electrons: FeedFreshness,
+    pub protons: FeedFreshness,
+    pub solar_wind: FeedFreshness,
+    pub kp_dst: FeedFreshness,
+    pub sharp: FeedFreshness,
+}
+
+impl FeedState {
+    pub fn quality(&self, now: DateTime<Utc>) -> FeedQuality {
+        // Limits reflect the source cadence plus a conservative outage allowance.
+        let xray = FeedFreshness::new(
+            "NOAA SWPC GOES XRS 1-day",
+            self.xray.back().map(|sample| sample.time_tag),
+            5 * 60,
+            self.xray.len(),
+            now,
+        );
+        let xray_short = FeedFreshness::new(
+            "NOAA SWPC GOES XRS short channel",
+            self.xray_short.back().map(|sample| sample.time_tag),
+            5 * 60,
+            self.xray_short.len(),
+            now,
+        );
+        let electrons = FeedFreshness::new(
+            "NOAA SWPC GOES integral electrons",
+            self.electrons.back().map(|sample| sample.time_tag),
+            15 * 60,
+            self.electrons.len(),
+            now,
+        );
+        let protons = FeedFreshness::new(
+            "NOAA SWPC GOES integral protons",
+            self.protons.back().map(|sample| sample.time_tag),
+            15 * 60,
+            self.protons.len(),
+            now,
+        );
+        let solar_wind = FeedFreshness::new(
+            "NOAA SWPC DSCOVR/ACE solar wind",
+            self.solar_wind.back().map(|sample| sample.time_tag),
+            10 * 60,
+            self.solar_wind.len(),
+            now,
+        );
+        let kp_dst = FeedFreshness::new(
+            "NOAA SWPC planetary K-index (Dst estimated)",
+            self.kp_dst.back().map(|sample| sample.time_tag),
+            4 * 60 * 60,
+            self.kp_dst.len(),
+            now,
+        );
+        let sharp = FeedFreshness::new(
+            "NASA/JSOC SHARP active-region parameters",
+            self.sharp.iter().map(|sample| sample.time_tag).max(),
+            6 * 60 * 60,
+            self.sharp.len(),
+            now,
+        );
+
+        // XRS is the primary channel for flare detection. Other channels improve
+        // fidelity but their absence must be described as degraded, not fabricated.
+        let feed_ready = xray.fresh;
+        let optional_fresh = electrons.fresh && protons.fresh && solar_wind.fresh && kp_dst.fresh;
+        let status = if feed_ready && optional_fresh {
+            "ok"
+        } else if feed_ready {
+            "degraded"
+        } else if xray.sample_count == 0 {
+            "starting"
+        } else {
+            "stale"
+        };
+
+        FeedQuality {
+            status,
+            feed_ready,
+            alerting_ready: false,
+            detector_ready: false,
+            detector_samples: 0,
+            detector_samples_required: 0,
+            evaluated_at: now,
+            last_poll: self.last_poll,
+            last_successful_fetch: self.last_update,
+            xray,
+            xray_short,
+            electrons,
+            protons,
+            solar_wind,
+            kp_dst,
+            sharp,
+        }
+    }
+}
+
+impl FeedQuality {
+    pub fn with_detector_samples(mut self, samples: usize, required: usize) -> Self {
+        self.detector_samples = samples;
+        self.detector_samples_required = required;
+        self.detector_ready = samples >= required;
+        self.alerting_ready = self.feed_ready && self.detector_ready;
+        if self.feed_ready && !self.detector_ready {
+            self.status = "warming_up";
+        }
+        self
+    }
+}
+
 /// Generic append with deduplication and ring buffer capping.
 fn append_dedup<T>(
     buf: &mut VecDeque<T>,
@@ -117,5 +277,49 @@ fn append_dedup<T>(
     }
     while buf.len() > max_size {
         buf.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn quality_uses_observation_time_not_poll_time() {
+        let now = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let mut feeds = FeedState::new();
+        feeds.last_poll = Some(now);
+        feeds.last_update = Some(now);
+        feeds.xray.push_back(xray::XraySample {
+            time_tag: now - chrono::Duration::minutes(30),
+            satellite: 18,
+            flux: 1e-7,
+            current_class: None,
+        });
+
+        let quality = feeds.quality(now);
+        assert_eq!(quality.status, "stale");
+        assert!(!quality.feed_ready);
+        assert_eq!(quality.xray.age_seconds, Some(30 * 60));
+    }
+
+    #[test]
+    fn fresh_primary_feed_can_run_in_degraded_mode() {
+        let now = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let mut feeds = FeedState::new();
+        feeds.xray.push_back(xray::XraySample {
+            time_tag: now - chrono::Duration::minutes(1),
+            satellite: 18,
+            flux: 1e-7,
+            current_class: None,
+        });
+
+        let quality = feeds.quality(now);
+        assert_eq!(quality.status, "degraded");
+        assert!(quality.feed_ready);
+        assert!(!quality.alerting_ready);
+        let ready = quality.with_detector_samples(200, 200);
+        assert!(ready.alerting_ready);
     }
 }
