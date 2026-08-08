@@ -15,8 +15,11 @@ data/
 frontend/node_modules/
 frontend/dist/
 
-# Build/output artifacts
-backend/output/
+# Build/output artifacts. Keep the trained JellyBallNet weights in the build
+# context (server.py loads backend/output/jellyball_net.pt at request time);
+# everything else here is regenerable local scratch.
+backend/output/*
+!backend/output/jellyball_net.pt
 **/*.png
 backend/uvicorn.log
 **/*.log
