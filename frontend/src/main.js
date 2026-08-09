@@ -1414,6 +1414,17 @@ function resizeOverlayCanvas(canvas, ctx) {
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
+
+// Flow trails are screen-space pixels, not globe geometry: each frame projects
+// particle positions through the *current* camera and overpaints the canvas
+// translucently so older segments streak. Those older pixels stay where the
+// previous camera put them, so moving the camera leaves ~1s of trail hanging
+// over the wrong part of the Earth. Wipe both overlays when the camera starts
+// moving; the next frame repaints them under the new projection.
+function clearFlowOverlays() {
+    if (windCtx && windCanvas) windCtx.clearRect(0, 0, windCanvas.clientWidth, windCanvas.clientHeight);
+    if (oceanCtx && oceanCanvas) oceanCtx.clearRect(0, 0, oceanCanvas.clientWidth, oceanCanvas.clientHeight);
+}
 window.addEventListener('resize', resizeWindCanvas);
 function resizeWindCanvas() {
     resizeOverlayCanvas(windCanvas, windCtx);
@@ -1424,6 +1435,11 @@ function resizeWindCanvas() {
     }
 }
 resizeWindCanvas();
+
+// moveStart covers zoom, pan and rotate; moveEnd catches wheel zooms, which can
+// settle without ever firing moveStart.
+viewer.camera.moveStart.addEventListener(clearFlowOverlays);
+viewer.camera.moveEnd.addEventListener(clearFlowOverlays);
 
 const windColorStops = [
     { s: 0, c: [90, 160, 255] },
