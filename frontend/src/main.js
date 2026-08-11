@@ -143,6 +143,64 @@ viewer.imageryLayers.add(fallbackImageryLayer);
     }
 })();
 
+// --- Wildfire smoke / aerosol (NASA GIBS) ---
+// OMPS UV Aerosol Index is tuned for UV-absorbing aerosols (smoke and dust) and
+// stays usable over bright surfaces and thin cloud, where AOD retrievals drop
+// out. Tiles are paletted PNG with tRNS, so clear air is genuinely transparent
+// and the layer drapes over the basemap instead of masking it.
+//
+// GIBS serves Access-Control-Allow-Origin: *, so this needs no backend proxy.
+// Two API quirks: the tile path orders segments {z}/{y}/{x} (row before column,
+// unlike the usual /{z}/{x}/{y}), though the row itself uses the standard WMTS
+// top-left origin and so maps straight to Cesium's {y}; and max zoom is encoded
+// in the TileMatrixSet name -- past maximumLevel GIBS returns HTTP 400, not a
+// blank tile, so the cap has to be declared here.
+const SMOKE_LAYER_ID = 'OMPS_Aerosol_Index_PyroCumuloNimbus';
+const SMOKE_MAX_LEVEL = 6;
+let smokeImageryLayer = null;
+
+// Polar-orbiter products land 3-5h after overpass, so "today" is often a
+// partial swath. Step back a day until a layer with real coverage is found.
+function gibsDateString(daysAgo) {
+    const d = new Date(Date.now() - daysAgo * 86400000);
+    return d.toISOString().slice(0, 10);
+}
+
+async function loadSmokeLayer(daysAgo = 1) {
+    const date = gibsDateString(daysAgo);
+    const provider = new Cesium.UrlTemplateImageryProvider({
+        url: `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${SMOKE_LAYER_ID}/default/${date}/GoogleMapsCompatible_Level${SMOKE_MAX_LEVEL}/{z}/{y}/{x}.png`,
+        tilingScheme: new Cesium.WebMercatorTilingScheme(),
+        maximumLevel: SMOKE_MAX_LEVEL,
+        credit: new Cesium.Credit('Smoke/aerosol: NASA GIBS (OMPS UV Aerosol Index)'),
+    });
+    // GIBS 404s tiles with no valid retrieval rather than returning an empty
+    // image -- permanently over Antarctica (polar night defeats a UV index),
+    // and transiently wherever a day's swaths leave a gap. Treat a missing tile
+    // as "no aerosol here" instead of letting Cesium log it as a load failure.
+    provider.errorEvent.addEventListener(err => {
+        if (err?.statusCode === 404) err.retry = false;
+    });
+    const layer = viewer.imageryLayers.addImageryProvider(provider);
+    // The palette only marks its magenta no-data sentinel as transparent; clean
+    // air is opaque *white*, which would drape the globe in a grey sheet. Key
+    // out the white end of the ramp so alpha tracks aerosol load: colour
+    // distance from white fades in, leaving only actual plumes visible.
+    // 0.14 chosen by sweeping the threshold against the 2023-06-07 Canadian
+    // plume: 0.05 leaves 62% of the tile opaque (the grey-sheet failure), 0.35
+    // erases all but 0.3%. At 0.14 roughly 7.6% survives -- dense plumes plus
+    // the moderate haze around them.
+    layer.colorToAlpha = Cesium.Color.WHITE;
+    layer.colorToAlphaThreshold = 0.14;
+    layer.alpha = 0.85;
+    layer.show = layerVisible.smoke;
+    if (smokeImageryLayer) viewer.imageryLayers.remove(smokeImageryLayer, true);
+    smokeImageryLayer = layer;
+    const detail = document.getElementById('smoke-detail');
+    if (detail) detail.textContent = `OMPS UV Aerosol Index · ${date}`;
+    return layer;
+}
+
 // Configure atmosphere
 viewer.scene.skyAtmosphere.brightnessShift = 0.0;
 viewer.scene.skyAtmosphere.hueShift = -0.05;
@@ -210,6 +268,7 @@ const layerVisible = {
     'magnetic-field': true, 'solar-wind': true, telluric: true,
     'magnetic-anomalies': true,
     'ocean-lights': true,
+    smoke: false,
 };
 
 // --- Live state variables (updated by poll loop) ---
@@ -239,6 +298,11 @@ function setLayerVisible(name, visible) {
     if (dataSources[name]) dataSources[name].show = effectiveVisible;
     if (name === 'wind-field') setWindFieldVisible(effectiveVisible);
     if (name === 'ocean-currents') setOceanFieldVisible(effectiveVisible);
+    if (name === 'smoke') {
+        // Fetch tiles only once the layer is first switched on.
+        if (effectiveVisible && !smokeImageryLayer) loadSmokeLayer();
+        else if (smokeImageryLayer) smokeImageryLayer.show = effectiveVisible;
+    }
     document.querySelectorAll(`[data-layer="${name}"]`).forEach(input => {
         input.checked = effectiveVisible;
     });
