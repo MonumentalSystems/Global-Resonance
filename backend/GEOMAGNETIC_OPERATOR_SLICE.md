@@ -52,6 +52,11 @@ therefore suitable now for contract validation and scheduled accumulation, not
 for a credible model comparison. Historical Phase B training should pair NASA
 OMNI hourly drivers with an audited historical magnetometer archive.
 
+That historical path is now implemented in
+`historical_geomagnetic_operator.py`. The first 28-day pilot and its bounded
+negative fixed-pole result are documented in
+`HISTORICAL_OPERATOR_PILOT_20260831.md`.
+
 ## Run
 
 ```bash

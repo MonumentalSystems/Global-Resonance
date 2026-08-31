@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
+import time
 from typing import Any, Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -127,25 +129,71 @@ def hourly_reduce(
 
 
 def fetch_usgs_station(
-    code: str, start: datetime, end: datetime, sampling_period: int = 60
+    code: str,
+    start: datetime,
+    end: datetime,
+    sampling_period: int = 60,
+    data_type: str = "variation",
+    chunk_days: int = 28,
+    cache_dir: Path | None = None,
+    retries: int = 1,
 ) -> dict[str, Any]:
-    """Fetch a station in chunks while preserving every null measurement."""
+    """Fetch a station in resumable chunks while preserving null measurements."""
 
+    if chunk_days <= 0:
+        raise ValueError("chunk_days must be positive")
+    if retries < 0:
+        raise ValueError("retries must be non-negative")
     chunks = []
+    provenance = []
     cursor = start
     while cursor < end:
-        chunk_end = min(end, cursor + timedelta(days=28))
-        payload = fetch_json(
-            USGS_GEOMAG_URL,
+        chunk_end = min(end, cursor + timedelta(days=chunk_days))
+        params = {
+            "id": code,
+            "elements": ",".join(COMPONENTS),
+            "sampling_period": str(sampling_period),
+            "type": data_type,
+            "format": "json",
+            "starttime": cursor.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endtime": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        cache_path = None
+        if cache_dir is not None:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = cache_dir / (
+                f"{code}_{cursor:%Y%m%dT%H%M%S}_{chunk_end:%Y%m%dT%H%M%S}_"
+                f"{sampling_period}s_{data_type}.json"
+            )
+
+        payload_bytes = (
+            cache_path.read_bytes() if cache_path and cache_path.exists() else None
+        )
+        if payload_bytes is not None:
+            payload = decode_json_payload(payload_bytes)
+        else:
+            for attempt in range(retries + 1):
+                try:
+                    payload = fetch_json(USGS_GEOMAG_URL, params)
+                    break
+                except Exception:
+                    if attempt == retries:
+                        raise
+                    time.sleep(2**attempt)
+            payload_bytes = json.dumps(payload, separators=(",", ":")).encode()
+            if cache_path is not None:
+                temporary = cache_path.with_suffix(".tmp")
+                temporary.write_bytes(payload_bytes)
+                temporary.replace(cache_path)
+
+        assert payload_bytes is not None
+        provenance.append(
             {
-                "id": code,
-                "elements": ",".join(COMPONENTS),
-                "sampling_period": str(sampling_period),
-                "type": "variation",
-                "format": "json",
-                "starttime": cursor.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "endtime": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            },
+                "start": params["starttime"],
+                "end": params["endtime"],
+                "cache_file": str(cache_path) if cache_path else None,
+                "sha256": hashlib.sha256(payload_bytes).hexdigest(),
+            }
         )
         chunks.append(parse_usgs_geomag(payload))
         cursor = chunk_end
@@ -158,6 +206,7 @@ def fetch_usgs_station(
         for record in chunk["records"]:
             deduplicated[record["time"]] = record
     result["records"] = [deduplicated[key] for key in sorted(deduplicated)]
+    result["provenance"] = provenance
     return result
 
 
