@@ -64,6 +64,42 @@ def _associated_legendre(degree: int, m: int, x: Tensor) -> Tensor:
     return p_lm1
 
 
+def real_spherical_harmonic_basis(
+    latitudes_deg: Tensor, longitudes_deg: Tensor, lmax: int
+) -> tuple[Tensor, tuple[tuple[int, int], ...]]:
+    """Evaluate the real spherical harmonic basis at arbitrary locations.
+
+    Returns a ``(..., (lmax + 1)^2)`` basis and the corresponding ``(l, m)``
+    mode labels. Positive ``m`` is the cosine orientation and negative ``m``
+    is the sine orientation.
+    """
+
+    latitudes_deg, longitudes_deg = torch.broadcast_tensors(
+        latitudes_deg, longitudes_deg
+    )
+    theta = torch.deg2rad(90.0 - latitudes_deg)
+    phi = torch.deg2rad(longitudes_deg)
+    x = torch.cos(theta)
+    basis = []
+    modes: list[tuple[int, int]] = []
+    for degree in range(lmax + 1):
+        for m_signed in range(-degree, degree + 1):
+            m = abs(m_signed)
+            log_norm = 0.5 * (
+                math.log((2 * degree + 1) / (4 * math.pi))
+                + math.lgamma(degree - m + 1)
+                - math.lgamma(degree + m + 1)
+            )
+            y = math.exp(log_norm) * _associated_legendre(degree, m, x)
+            if m_signed > 0:
+                y = math.sqrt(2.0) * y * torch.cos(m * phi)
+            elif m_signed < 0:
+                y = math.sqrt(2.0) * y * torch.sin(m * phi)
+            basis.append(y)
+            modes.append((degree, m_signed))
+    return torch.stack(basis, dim=-1), tuple(modes)
+
+
 class RealSphericalHarmonicTransform(nn.Module):
     """Small differentiable real SHT for band-limited benchmark fields.
 
@@ -84,27 +120,12 @@ class RealSphericalHarmonicTransform(nn.Module):
         theta = (torch.arange(nlat, dtype=torch.float64) + 0.5) * math.pi / nlat
         phi = (torch.arange(nlon, dtype=torch.float64) + 0.5) * 2.0 * math.pi / nlon
         theta_grid, phi_grid = torch.meshgrid(theta, phi, indexing="ij")
-        x = torch.cos(theta_grid)
-
-        basis = []
-        modes: list[tuple[int, int]] = []
-        for degree in range(lmax + 1):
-            for m_signed in range(-degree, degree + 1):
-                m = abs(m_signed)
-                log_norm = 0.5 * (
-                    math.log((2 * degree + 1) / (4 * math.pi))
-                    + math.lgamma(degree - m + 1)
-                    - math.lgamma(degree + m + 1)
-                )
-                y = math.exp(log_norm) * _associated_legendre(degree, m, x)
-                if m_signed > 0:
-                    y = math.sqrt(2.0) * y * torch.cos(m * phi_grid)
-                elif m_signed < 0:
-                    y = math.sqrt(2.0) * y * torch.sin(m * phi_grid)
-                basis.append(y.reshape(-1))
-                modes.append((degree, m_signed))
-
-        synthesis = torch.stack(basis)
+        latitude_grid = 90.0 - torch.rad2deg(theta_grid)
+        longitude_grid = torch.rad2deg(phi_grid)
+        point_basis, modes = real_spherical_harmonic_basis(
+            latitude_grid, longitude_grid, lmax
+        )
+        synthesis = point_basis.reshape(-1, point_basis.shape[-1]).T
         weights = (
             torch.sin(theta_grid) * (math.pi / nlat) * (2.0 * math.pi / nlon)
         ).reshape(-1)
@@ -112,7 +133,7 @@ class RealSphericalHarmonicTransform(nn.Module):
         gram = weighted_basis @ synthesis.T
         analysis = torch.linalg.solve(gram, weighted_basis)
 
-        self.modes = tuple(modes)
+        self.modes = modes
         self.register_buffer("synthesis_basis", synthesis.float())
         self.register_buffer("analysis_basis", analysis.float())
         self.register_buffer(
