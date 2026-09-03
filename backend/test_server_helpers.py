@@ -2,7 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from server import fill_vector_grid, lunar_phase, subsolar_point
+import server
+from server import fill_vector_grid, get_solar_wind, lunar_phase, subsolar_point
 
 
 def test_subsolar_point_is_near_equator_and_greenwich_at_march_equinox_noon():
@@ -37,3 +38,45 @@ def test_fill_vector_grid_preserves_samples_and_fills_supported_neighbors():
     assert u[1] == pytest.approx(2.0)
     assert v[1] == pytest.approx(2.0)
     assert speed[1] == pytest.approx(2.828)
+
+
+def test_solar_wind_endpoint_uses_active_quality_records(monkeypatch):
+    magnetic = [
+        {
+            "time_tag": "2026-08-30T00:00:00Z",
+            "active": False,
+            "overall_quality": 0,
+            "bz_gsm": -99.0,
+        },
+        {
+            "time_tag": "2026-08-30T00:00:00Z",
+            "active": True,
+            "overall_quality": 0,
+            "source": "SOLAR1",
+            "bt": 6.0,
+            "by_gsm": 1.0,
+            "bz_gsm": -3.5,
+        },
+    ]
+    wind = [
+        {
+            "time_tag": "2026-08-30T00:00:00Z",
+            "active": True,
+            "overall_quality": 0,
+            "source": "SOLAR1",
+            "proton_speed": 425.0,
+            "proton_density": 4.2,
+        }
+    ]
+
+    def fake_cached_fetch(key, _url, ttl=server.CACHE_TTL):
+        del ttl
+        return magnetic if key == "sw_mag" else wind
+
+    monkeypatch.setattr(server, "cached_fetch", fake_cached_fetch)
+    result = get_solar_wind()
+
+    assert result["current_bz"] == -3.5
+    assert result["current_speed"] == 425.0
+    assert result["current_density"] == 4.2
+    assert result["bz"][0]["source"] == "SOLAR1"

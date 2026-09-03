@@ -31,6 +31,21 @@ except ImportError:  # server.py is commonly launched from backend/
         pore_pressure_response,
     )
 
+try:
+    from .operator_data_sources import (
+        RTSW_MAG_URL,
+        RTSW_WIND_URL,
+        parse_rtsw_magnetic,
+        parse_rtsw_wind,
+    )
+except ImportError:  # server.py is commonly launched from backend/
+    from operator_data_sources import (
+        RTSW_MAG_URL,
+        RTSW_WIND_URL,
+        parse_rtsw_magnetic,
+        parse_rtsw_wind,
+    )
+
 app = FastAPI(
     title="Global Resonance API",
     version="0.1.0",
@@ -77,6 +92,22 @@ def cached_fetch(key, url, ttl=CACHE_TTL):
     except Exception as e:
         print(f"[WARN] {key}: {e}")
         return CACHE.get(key, {}).get("data")
+
+
+def _latest_rtsw_magnetic(key, default=None):
+    records = parse_rtsw_magnetic(CACHE.get("sw_mag", {}).get("data") or [])
+    return next(
+        (row[key] for row in reversed(records) if row.get(key) is not None),
+        default,
+    )
+
+
+def _latest_rtsw_wind(key, default=None):
+    records = parse_rtsw_wind(CACHE.get("sw_plasma", {}).get("data") or [])
+    return next(
+        (row[key] for row in reversed(records) if row.get(key) is not None),
+        default,
+    )
 
 
 def fill_vector_grid(u_list, v_list, n_lat, n_lon, passes=6):
@@ -252,27 +283,30 @@ def get_research_model_context():
 @app.get("/api/solar_wind")
 def get_solar_wind():
     """Solar wind Bz, speed, density from SWPC."""
-    mag = cached_fetch("sw_mag", "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json")
-    plasma = cached_fetch("sw_plasma", "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json")
+    mag = cached_fetch("sw_mag", RTSW_MAG_URL)
+    plasma = cached_fetch("sw_plasma", RTSW_WIND_URL)
 
     result = {"bz": [], "speed": [], "density": []}
     if mag:
-        for row in mag[1:]:
-            try:
-                bz = float(row[3]) if row[3] not in (None, "", "null") else None
-                result["bz"].append({"time": row[0], "value": bz})
-            except Exception:
-                pass
+        for row in parse_rtsw_magnetic(mag):
+            result["bz"].append(
+                {
+                    "time": row["time"].isoformat(),
+                    "value": row["bz_gsm"],
+                    "source": row["source"],
+                    "quality": row["quality"],
+                }
+            )
 
     if plasma:
-        for row in plasma[1:]:
-            try:
-                d = float(row[1]) if row[1] not in (None, "", "null") else None
-                v = float(row[2]) if row[2] not in (None, "", "null") else None
-                result["speed"].append({"time": row[0], "value": v})
-                result["density"].append({"time": row[0], "value": d})
-            except Exception:
-                pass
+        for row in parse_rtsw_wind(plasma):
+            common = {
+                "time": row["time"].isoformat(),
+                "source": row["source"],
+                "quality": row["quality"],
+            }
+            result["speed"].append({**common, "value": row["speed"]})
+            result["density"].append({**common, "value": row["density"]})
 
     # Current values
     if result["bz"]:
@@ -520,15 +554,8 @@ def get_cme_predict(
 
     # Use measured solar wind if not provided
     if v_sw is None:
-        sw = cached_fetch("sw_plasma", "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json")
-        if sw:
-            for row in reversed(sw[1:]):
-                try:
-                    v_sw = float(row[2])
-                    if v_sw and v_sw > 200:
-                        break
-                except Exception:
-                    pass
+        cached_fetch("sw_plasma", RTSW_WIND_URL)
+        v_sw = _latest_rtsw_wind("speed")
         if not v_sw:
             v_sw = 400
 
@@ -726,7 +753,6 @@ def get_jellyball_prediction():
 
     # Get current data from cache
     kp_data = CACHE.get("kp", {}).get("data")
-    sw_data = CACHE.get("sw_mag", {}).get("data")
 
     # Current Kp
     kp = 2.0
@@ -743,30 +769,10 @@ def get_jellyball_prediction():
             pass
 
     # Current Bz
-    bz = 0.0
-    if sw_data:
-        try:
-            for row in reversed(sw_data[1:]):
-                v = row[3] if len(row) > 3 else None
-                if v not in (None, "", "null"):
-                    bz = float(v)
-                    break
-        except Exception:
-            pass
+    bz = _latest_rtsw_magnetic("bz_gsm", 0.0)
 
     # Current solar wind speed
-    v_sw = 400.0
-    if sw_data:
-        try:
-            plasma = CACHE.get("sw_plasma", {}).get("data")
-            if plasma:
-                for row in reversed(plasma[1:]):
-                    v = row[2] if len(row) > 2 else None
-                    if v not in (None, "", "null"):
-                        v_sw = float(v)
-                        break
-        except Exception:
-            pass
+    v_sw = _latest_rtsw_wind("speed", 400.0)
 
     # === Compute J (coupling stiffness) ===
     # J is driven by geomagnetic compression:
@@ -958,17 +964,7 @@ def get_jellyball_neural():
         except Exception:
             pass
 
-    bz = 0.0
-    sw_data = CACHE.get("sw_mag", {}).get("data")
-    if sw_data:
-        try:
-            for row in reversed(sw_data[1:]):
-                v = row[3] if len(row) > 3 else None
-                if v not in (None, "", "null"):
-                    bz = float(v)
-                    break
-        except Exception:
-            pass
+    bz = _latest_rtsw_magnetic("bz_gsm", 0.0)
 
     dst = -20.0  # default
     solar_input = [kp, dst, bz, 0, 0, 0]
@@ -1669,14 +1665,7 @@ def get_pore_pressure():
                 try: kp = float(row[1]); break
                 except: pass
 
-    bz = 0.0
-    sw_data = CACHE.get("sw_mag", {}).get("data")
-    if sw_data:
-        for row in reversed(sw_data[1:]):
-            v = row[3] if len(row) > 3 else None
-            if v not in (None, "", "null"):
-                try: bz = float(v); break
-                except: pass
+    bz = _latest_rtsw_magnetic("bz_gsm", 0.0)
 
     # Lunar tidal force
     now = datetime.now(timezone.utc)
@@ -2165,7 +2154,6 @@ def get_field_strengths():
     """
     # Get latest data from cache
     kp_data = CACHE.get("kp", {}).get("data")
-    sw_data = CACHE.get("sw_mag", {}).get("data")
     dst_data = None  # would need Dst cache
     cr_stations = CACHE.get("cosmic_rays", {}).get("data", {})
 
@@ -2186,16 +2174,7 @@ def get_field_strengths():
             pass
 
     # Current Bz
-    bz = 0.0
-    if sw_data:
-        try:
-            for row in reversed(sw_data[1:]):
-                v = row[3] if len(row) > 3 else None
-                if v not in (None, "", "null"):
-                    bz = float(v)
-                    break
-        except Exception:
-            pass
+    bz = _latest_rtsw_magnetic("bz_gsm", 0.0)
 
     # Cosmic ray deviation
     cr_dev = 0.0

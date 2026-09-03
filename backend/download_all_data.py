@@ -15,6 +15,21 @@ import sys
 import os
 import time
 
+try:
+    from .operator_data_sources import (
+        RTSW_MAG_URL,
+        RTSW_WIND_URL,
+        parse_rtsw_magnetic,
+        parse_rtsw_wind,
+    )
+except ImportError:
+    from operator_data_sources import (
+        RTSW_MAG_URL,
+        RTSW_WIND_URL,
+        parse_rtsw_magnetic,
+        parse_rtsw_wind,
+    )
+
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -346,18 +361,32 @@ def download_cmes():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 6. DSCOVR / ACE SOLAR WIND (SWPC JSON — last 7 days + archive info)
+# 6. ACTIVE RTSW SOLAR WIND (SWPC JSON — current rolling window)
 # ═══════════════════════════════════════════════════════════════════════
 
 def download_solar_wind():
-    # SWPC provides 7-day real-time data in JSON
-    # For longer archives, NCEI DSCOVR portal needed (manual download)
+    # The legacy products/solar-wind/* endpoints were retired in 2026. The
+    # replacement RTSW feeds include active-spacecraft and quality metadata.
     cache = DATA_DIR / "solar_wind_recent.json"
-    if not cache.exists():
-        print("\n  Downloading recent solar wind from SWPC (7-day JSON)...")
+    wind_data = {}
+    if cache.exists():
+        try:
+            with open(cache) as handle:
+                candidate = json.load(handle)
+            first_mag = next(iter(candidate.get("mag", [])), None)
+            if isinstance(first_mag, dict) and "active" in first_mag:
+                wind_data = candidate
+                print("  Already cached: solar_wind_recent.json")
+            else:
+                print("  Replacing retired-format solar wind cache...")
+        except (OSError, ValueError, AttributeError):
+            print("  Replacing unreadable solar wind cache...")
+
+    if not wind_data:
+        print("\n  Downloading active real-time solar wind from SWPC...")
         urls = {
-            "mag": "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json",
-            "plasma": "https://services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json",
+            "mag": RTSW_MAG_URL,
+            "plasma": RTSW_WIND_URL,
         }
         wind_data = {}
         for key, url in urls.items():
@@ -371,22 +400,15 @@ def download_solar_wind():
 
         with open(cache, "w") as f:
             json.dump(wind_data, f)
-        print(f"  Saved: solar_wind_recent.json")
+        print("  Saved: solar_wind_recent.json")
 
-        # Parse into CSV
-        if "mag" in wind_data and len(wind_data["mag"]) > 1:
-            headers = wind_data["mag"][0]
-            rows = wind_data["mag"][1:]
-            mag_df = pd.DataFrame(rows, columns=headers)
-            save_if_new(mag_df, "solar_wind_mag_7day.csv", force=True)
+    if wind_data.get("mag"):
+        mag_df = pd.DataFrame(parse_rtsw_magnetic(wind_data["mag"]))
+        save_if_new(mag_df, "rtsw_mag_1m.csv", force=True)
 
-        if "plasma" in wind_data and len(wind_data["plasma"]) > 1:
-            headers = wind_data["plasma"][0]
-            rows = wind_data["plasma"][1:]
-            plasma_df = pd.DataFrame(rows, columns=headers)
-            save_if_new(plasma_df, "solar_wind_plasma_7day.csv", force=True)
-    else:
-        print("  Already cached: solar_wind_recent.json")
+    if wind_data.get("plasma"):
+        plasma_df = pd.DataFrame(parse_rtsw_wind(wind_data["plasma"]))
+        save_if_new(plasma_df, "rtsw_wind_1m.csv", force=True)
 
     # DSCOVR archive pointer
     print("  Note: Full DSCOVR archive at https://www.ngdc.noaa.gov/dscovr/portal/index.html")
