@@ -111,10 +111,13 @@ different station panel because it is directionally consistent and survives
 the present multiplicity correction. Its magnitude is too small, and its event
 support too limited, to pass the gate for a neural pole bank.
 
-The next clean slice is therefore **replication before complexity**: freeze the
-same 15-term H1-only baseline and linear controls, then evaluate other years
-and/or a leave-station-panel-out network. A nonlinear VSH model should only be
-reconsidered if a materially useful storm-stratum gain repeats.
+The next clean slice was therefore **replication before complexity**. We froze
+the 24-hour pole, 6-hour poloidal target, same 15-term H1-only baseline, and
+linear control procedure, then evaluated 2023. The point effect repeated, but
+its independent-year interval crossed zero; see
+[`CROSSYEAR_VECTOR_SPHERICAL_REPLICATION_RESULTS_20260904.md`](CROSSYEAR_VECTOR_SPHERICAL_REPLICATION_RESULTS_20260904.md).
+A nonlinear VSH model should only be reconsidered if a materially useful
+storm-stratum gain repeats with independent-event support.
 
 ## Reproduction
 

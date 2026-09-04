@@ -138,3 +138,7 @@ test is now complete: the large 12-hour poloidal and 3-hour radial clues
 disappear after leakage-safe calendar residualization. A much smaller 6-hour
 poloidal effect remains for cross-year replication; see
 [`RESIDUALIZED_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`](RESIDUALIZED_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md).
+The frozen 6-hour poloidal hypothesis was then evaluated on an independently
+downloaded 2023 year. Its point direction and magnitude repeated, but its 95%
+daily and weekly intervals crossed zero; see
+[`CROSSYEAR_VECTOR_SPHERICAL_REPLICATION_RESULTS_20260904.md`](CROSSYEAR_VECTOR_SPHERICAL_REPLICATION_RESULTS_20260904.md).
