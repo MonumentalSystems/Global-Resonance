@@ -52,7 +52,7 @@ except ImportError:
     )
 
 
-RIDGE_GRID = (1e-4, 1e-2, 1.0, 100.0, 10_000.0)
+RIDGE_GRID = tuple(10.0**exponent for exponent in range(-4, 7))
 COMMON_WARMUP_HOURS = 24
 
 
@@ -221,13 +221,22 @@ def _control_rows(
     coefficients: np.ndarray,
     coefficient_mask: np.ndarray,
     target_indices: np.ndarray,
+    lead_hours: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    current_complete = coefficient_mask[:-1].all(axis=1)
-    target_complete = coefficient_mask[1:, target_indices].all(axis=1)
-    eligible = ready[:-1] & current_complete & target_complete
-    times = np.flatnonzero(eligible) + 1
-    x = np.concatenate((coefficients[:-1][eligible], features[:-1][eligible]), axis=1)
-    y = coefficients[1:][eligible][:, target_indices]
+    if lead_hours <= 0 or lead_hours >= len(coefficients):
+        raise ValueError("lead_hours must be within the time axis")
+    current_complete = coefficient_mask[:-lead_hours].all(axis=1)
+    target_complete = coefficient_mask[lead_hours:, target_indices].all(axis=1)
+    eligible = ready[:-lead_hours] & current_complete & target_complete
+    times = np.flatnonzero(eligible) + lead_hours
+    x = np.concatenate(
+        (
+            coefficients[:-lead_hours][eligible],
+            features[:-lead_hours][eligible],
+        ),
+        axis=1,
+    )
+    y = coefficients[lead_hours:][eligible][:, target_indices]
     return x.astype(np.float64), y.astype(np.float64), times
 
 
@@ -247,12 +256,18 @@ def select_ridge(
     coefficient_mask: np.ndarray,
     splits: dict[str, tuple[int, int]],
     target_indices: np.ndarray,
+    lead_hours: int,
     ridge_grid: Iterable[float] = RIDGE_GRID,
 ) -> tuple[float, float]:
     """Select regularization using train-to-validation error only."""
 
     x, y, times = _control_rows(
-        features, ready, coefficients, coefficient_mask, target_indices
+        features,
+        ready,
+        coefficients,
+        coefficient_mask,
+        target_indices,
+        lead_hours,
     )
     rows = _split_rows(times, splits)
     train = rows["train"]
@@ -317,11 +332,17 @@ def evaluate_control(
     labels: tuple[tuple[str, int, int], ...],
     evaluation_masks: dict[str, np.ndarray],
     ridge: float,
+    lead_hours: int,
 ) -> dict[str, Any]:
     """Refit train+validation and evaluate the selected model once on test."""
 
     x, y, times = _control_rows(
-        features, ready, coefficients, coefficient_mask, target_indices
+        features,
+        ready,
+        coefficients,
+        coefficient_mask,
+        target_indices,
+        lead_hours,
     )
     rows = _split_rows(times, splits)
     fit = rows["train"] | rows["validation"]
@@ -348,6 +369,7 @@ def evaluate_control(
             "test_rows": int(test.sum()),
             "features": int(x.shape[1]),
             "parameters": int((x.shape[1] + 1) * y.shape[1]),
+            "lead_hours": lead_hours,
         }
     )
     result["_test_target_times"] = times[test]
@@ -355,15 +377,20 @@ def evaluate_control(
     return result
 
 
-def paired_daily_block_bootstrap(
+def paired_block_bootstrap(
     reference: dict[str, Any],
     candidate: dict[str, Any],
     evaluation_masks: dict[str, np.ndarray],
     *,
+    block_hours: int,
+    block_label: str,
     samples: int = 5_000,
     seed: int = 42,
 ) -> dict[str, Any]:
-    """Bootstrap paired fractional MSE improvement using UTC-day blocks."""
+    """Bootstrap paired fractional MSE improvement over contiguous blocks."""
+
+    if block_hours <= 0:
+        raise ValueError("block_hours must be positive")
 
     reference_times = reference["_test_target_times"]
     candidate_times = candidate["_test_target_times"]
@@ -381,24 +408,26 @@ def paired_daily_block_bootstrap(
         if not len(times):
             result[stratum] = {"rows": 0, "days": 0, "estimate": None}
             continue
-        days = times // 24
-        unique_days, inverse = np.unique(days, return_inverse=True)
+        blocks = times // block_hours
+        unique_blocks, inverse = np.unique(blocks, return_inverse=True)
         counts = np.bincount(inverse).astype(np.float64)
         reference_sums = np.bincount(inverse, weights=reference_error[selected])
         candidate_sums = np.bincount(inverse, weights=candidate_error[selected])
         estimate = 1.0 - candidate_error[selected].mean() / reference_error[selected].mean()
-        if len(unique_days) == 1:
+        if len(unique_blocks) == 1:
             result[stratum] = {
                 "rows": int(len(times)),
-                "days": 1,
+                "blocks": 1,
                 "estimate": float(estimate),
                 "ci95": None,
+                "ci98_33": None,
+                "ci99_44": None,
                 "probability_improvement": None,
             }
             continue
         generator = np.random.default_rng(seed)
         draws = generator.integers(
-            0, len(unique_days), size=(samples, len(unique_days))
+            0, len(unique_blocks), size=(samples, len(unique_blocks))
         )
         sampled_counts = counts[draws].sum(axis=1)
         reference_means = reference_sums[draws].sum(axis=1) / sampled_counts
@@ -406,17 +435,63 @@ def paired_daily_block_bootstrap(
         improvement = 1.0 - candidate_means / reference_means
         result[stratum] = {
             "rows": int(len(times)),
-            "days": int(len(unique_days)),
+            "blocks": int(len(unique_blocks)),
             "estimate": float(estimate),
             "ci95": [
                 float(np.quantile(improvement, 0.025)),
                 float(np.quantile(improvement, 0.975)),
             ],
+            "ci98_33": [
+                float(np.quantile(improvement, 1.0 / 120.0)),
+                float(np.quantile(improvement, 119.0 / 120.0)),
+            ],
+            "ci99_44": [
+                float(np.quantile(improvement, 1.0 / 360.0)),
+                float(np.quantile(improvement, 359.0 / 360.0)),
+            ],
             "probability_improvement": float(np.mean(improvement > 0.0)),
             "samples": samples,
-            "block": "UTC day",
+            "block": block_label,
         }
     return result
+
+
+def paired_daily_block_bootstrap(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    evaluation_masks: dict[str, np.ndarray],
+    *,
+    samples: int = 5_000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    return paired_block_bootstrap(
+        reference,
+        candidate,
+        evaluation_masks,
+        block_hours=24,
+        block_label="UTC day",
+        samples=samples,
+        seed=seed,
+    )
+
+
+def paired_weekly_block_bootstrap(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    evaluation_masks: dict[str, np.ndarray],
+    *,
+    samples: int = 5_000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    return paired_block_bootstrap(
+        reference,
+        candidate,
+        evaluation_masks,
+        block_hours=24 * 7,
+        block_label="UTC week",
+        samples=samples,
+        seed=seed,
+    )
 
 
 def _remove_private_diagnostics(value: Any) -> None:
@@ -438,6 +513,7 @@ def _select_temporal_control(
     target_indices: np.ndarray,
     labels: tuple[tuple[str, int, int], ...],
     evaluation_masks: dict[str, np.ndarray],
+    lead_hours: int,
 ) -> dict[str, Any]:
     selections = []
     for name, features in candidates.items():
@@ -448,6 +524,7 @@ def _select_temporal_control(
             coefficient_mask,
             splits,
             target_indices,
+            lead_hours,
         )
         selections.append((validation_mse, name, ridge))
     validation_mse, name, ridge = min(selections)
@@ -461,6 +538,7 @@ def _select_temporal_control(
         labels,
         evaluation_masks,
         ridge,
+        lead_hours,
     )
     result["selected_candidate"] = name
     result["selection_validation_mse"] = validation_mse
@@ -477,6 +555,7 @@ def persistence_and_climatology(
     splits: dict[str, tuple[int, int]],
     labels: tuple[tuple[str, int, int], ...],
     evaluation_masks: dict[str, np.ndarray],
+    lead_hours: int,
 ) -> dict[str, Any]:
     targets = np.arange(coefficients.shape[1])
     x, y, times = _control_rows(
@@ -485,6 +564,7 @@ def persistence_and_climatology(
         coefficients,
         coefficient_mask,
         targets,
+        lead_hours,
     )
     rows = _split_rows(times, splits)
     test = rows["test"]
@@ -520,6 +600,7 @@ def run_controls(
     *,
     half_lives: Iterable[float] = DEFAULT_HALF_LIVES,
     warmup_hours: int = COMMON_WARMUP_HOURS,
+    lead_hours: int = 1,
 ) -> dict[str, Any]:
     half_lives = tuple(float(value) for value in half_lives)
     ready = common_ready_mask(driver_mask, warmup_hours)
@@ -544,6 +625,7 @@ def run_controls(
         coefficient_mask,
         splits,
         all_targets,
+        lead_hours,
     )
     markov = evaluate_control(
         markov_features,
@@ -555,6 +637,7 @@ def run_controls(
         labels,
         evaluation_masks,
         markov_ridge,
+        lead_hours,
     )
     markov["selection_validation_mse"] = markov_validation
     pole = _select_temporal_control(
@@ -566,6 +649,7 @@ def run_controls(
         all_targets,
         labels,
         evaluation_masks,
+        lead_hours,
     )
     recurrent = _select_temporal_control(
         recurrent_candidates,
@@ -576,6 +660,7 @@ def run_controls(
         all_targets,
         labels,
         evaluation_masks,
+        lead_hours,
     )
 
     sectors = sector_indices(labels)
@@ -588,6 +673,7 @@ def run_controls(
             coefficient_mask,
             splits,
             indices,
+            lead_hours,
         )
         sector_markov = evaluate_control(
             markov_features,
@@ -599,6 +685,7 @@ def run_controls(
             labels,
             evaluation_masks,
             sector_markov_ridge,
+            lead_hours,
         )
         sector_markov["selection_validation_mse"] = sector_markov_validation
         sector_pole = _select_temporal_control(
@@ -610,6 +697,7 @@ def run_controls(
             indices,
             labels,
             evaluation_masks,
+            lead_hours,
         )
         sector_recurrent = _select_temporal_control(
             recurrent_candidates,
@@ -620,6 +708,7 @@ def run_controls(
             indices,
             labels,
             evaluation_masks,
+            lead_hours,
         )
         sector_models[sector] = {
             "markov": sector_markov,
@@ -643,6 +732,13 @@ def run_controls(
         for name, model in models.items()
         if name != "markov"
     }
+    paired_weekly_uncertainty = {
+        name: paired_weekly_block_bootstrap(
+            markov, model, evaluation_masks
+        )
+        for name, model in models.items()
+        if name != "markov"
+    }
     for row in sector_models.values():
         row["paired_daily_bootstrap"] = {
             "single_pole": paired_daily_block_bootstrap(
@@ -652,8 +748,18 @@ def run_controls(
                 row["markov"], row["orthogonal_recurrent"], evaluation_masks
             ),
         }
+        row["paired_weekly_bootstrap"] = {
+            "single_pole": paired_weekly_block_bootstrap(
+                row["markov"], row["single_pole"], evaluation_masks
+            ),
+            "orthogonal_recurrent": paired_weekly_block_bootstrap(
+                row["markov"], row["orthogonal_recurrent"], evaluation_masks
+            ),
+        }
     result = {
         "common_warmup_hours": warmup_hours,
+        "lead_hours": lead_hours,
+        "ridge_grid": RIDGE_GRID,
         "common_ready_fraction": float(ready.mean()),
         "half_lives_hours": half_lives,
         "models": models,
@@ -662,6 +768,7 @@ def run_controls(
         "orthogonal_recurrent_improvement_fraction": 1.0
         - recurrent["mse"] / markov["mse"],
         "paired_daily_bootstrap": paired_uncertainty,
+        "paired_weekly_bootstrap": paired_weekly_uncertainty,
         "sector_models": sector_models,
         "baselines": persistence_and_climatology(
             ready,
@@ -670,6 +777,7 @@ def run_controls(
             splits,
             labels,
             evaluation_masks,
+            lead_hours,
         ),
     }
     _remove_private_diagnostics(result)

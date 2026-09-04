@@ -93,6 +93,7 @@ def test_temporal_controls_are_parameter_matched_and_select_on_validation():
     uncertainty = result["paired_daily_bootstrap"]["single_pole"]["all"]
     assert uncertainty["rows"] == result["models"]["single_pole"]["test_rows"]
     assert len(uncertainty["ci95"]) == 2
+    assert len(uncertainty["ci99_44"]) == 2
     assert "_test_row_mse" not in result["models"]["single_pole"]
 
 
@@ -106,3 +107,24 @@ def test_signed_cycle_recurrence_is_stable_and_resets_on_gap():
     assert np.isfinite(features).all()
     assert np.abs(features).max() < 2.0
     assert np.all(features[50] == 0.0)
+
+
+def test_control_rows_align_multi_hour_origin_and_target():
+    coefficients = np.arange(10, dtype=np.float32)[:, None]
+    coefficient_mask = np.ones_like(coefficients, dtype=bool)
+    features = (100 + np.arange(10, dtype=np.float32))[:, None]
+    ready = np.ones(10, dtype=bool)
+
+    x, y, target_times = annual._control_rows(
+        features,
+        ready,
+        coefficients,
+        coefficient_mask,
+        np.asarray([0]),
+        lead_hours=3,
+    )
+
+    assert target_times.tolist() == list(range(3, 10))
+    assert x[:, 0].tolist() == list(range(7))
+    assert x[:, 1].tolist() == list(range(100, 107))
+    assert y[:, 0].tolist() == list(range(3, 10))

@@ -126,6 +126,11 @@ The next controlled experiment was completed without neural training first:
    if the tangential memory effect repeats across held-out storms.
 
 See `ANNUAL_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`. The tangential
-effect did not repeat: the validation-selected pole was 0.264% worse overall
-and 0.701% worse during held-out Q4 storm hours, with uncertainty intervals
+effect did not repeat: the validation-selected pole was 0.094% worse overall
+and 0.198% worse during held-out Q4 storm hours, with uncertainty intervals
 including zero. The one-hour nonlinear pole gate is therefore closed.
+
+The subsequent 3/6/12-hour test is recorded in
+`MULTIHORIZON_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`. It finds no
+reliable aggregate pole gain. Its largest sector clue is quiet-time rather than
+storm-time, motivating a training-only diurnal/seasonal residual test.
