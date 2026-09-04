@@ -222,19 +222,27 @@ def _ridge_metric(
     coefficient_mask: np.ndarray,
     splits: dict[str, tuple[int, int]],
     ridge_grid: Iterable[float] = (1e-4, 1e-2, 1.0, 100.0, 10_000.0),
+    target_indices: np.ndarray | None = None,
 ) -> dict[str, Any]:
     flat_coefficients = coefficients.reshape(len(coefficients), -1)
     flat_mask = coefficient_mask.reshape(len(coefficient_mask), -1)
+    if target_indices is None:
+        target_values = flat_coefficients
+        target_mask = flat_mask
+    else:
+        target_indices = np.asarray(target_indices, dtype=np.int64)
+        target_values = flat_coefficients[:, target_indices]
+        target_mask = flat_mask[:, target_indices]
     x_rows, y_rows, target_times = [], [], []
     for time_index in range(len(coefficients) - 1):
         if not (
             feature_mask[time_index]
             and flat_mask[time_index].all()
-            and flat_mask[time_index + 1].all()
+            and target_mask[time_index + 1].all()
         ):
             continue
         x_rows.append(np.concatenate((flat_coefficients[time_index], features[time_index])))
-        y_rows.append(flat_coefficients[time_index + 1])
+        y_rows.append(target_values[time_index + 1])
         target_times.append(time_index + 1)
     if not x_rows:
         return {"status": "unavailable", "reason": "no complete causal rows"}
@@ -313,7 +321,7 @@ def _ridge_metric(
         "selected_ridge": best_ridge,
         "selection_validation_mse": best_validation_mse,
     }
-    if coefficients.ndim == 3:
+    if coefficients.ndim == 3 and target_indices is None:
         shaped_error = squared_error.reshape(
             len(squared_error), coefficients.shape[1], coefficients.shape[2]
         )
@@ -329,6 +337,11 @@ def _ridge_metric(
             result["mse_nonconstant_modes"] = float(
                 shaped_error[:, :, 1:].mean()
             )
+    elif coefficients.ndim == 2 and target_indices is None:
+        result["mse_by_target_index"] = [
+            float(squared_error[:, index].mean())
+            for index in range(coefficients.shape[1])
+        ]
     return result
 
 

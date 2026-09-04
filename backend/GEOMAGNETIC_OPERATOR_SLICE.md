@@ -57,6 +57,10 @@ That historical path is now implemented in
 negative fixed-pole result are documented in
 `HISTORICAL_OPERATOR_PILOT_20260831.md`.
 
+The follow-up joint radial/poloidal/toroidal projection is implemented by
+`vector_spherical_harmonics.py` and evaluated in
+`VECTOR_SPHERICAL_OPERATOR_RESULTS_20260903.md`.
+
 ## Run
 
 ```bash

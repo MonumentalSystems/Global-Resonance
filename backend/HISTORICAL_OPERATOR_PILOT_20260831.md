@@ -118,6 +118,11 @@ Do not train the nonlinear spherical operator on this single month yet. First:
 4. only then run the required three-seed RotationalAdamW neural experiment with
    W&B logging and the results registry.
 
+The vector-basis portion of this gate is now implemented. See
+`VECTOR_SPHERICAL_OPERATOR_RESULTS_20260903.md`: it localizes a small shared-pole
+test gain to poloidal and toroidal sectors, but sector-specific validation
+choices do not generalize across the short test block.
+
 ## Reproduction
 
 ```bash
