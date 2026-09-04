@@ -93,7 +93,9 @@ def test_temporal_controls_are_parameter_matched_and_select_on_validation():
     uncertainty = result["paired_daily_bootstrap"]["single_pole"]["all"]
     assert uncertainty["rows"] == result["models"]["single_pole"]["test_rows"]
     assert len(uncertainty["ci95"]) == 2
+    assert len(uncertainty["ci98_75"]) == 2
     assert len(uncertainty["ci99_44"]) == 2
+    assert len(uncertainty["ci99_58"]) == 2
     assert "_test_row_mse" not in result["models"]["single_pole"]
 
 
@@ -128,3 +130,27 @@ def test_control_rows_align_multi_hour_origin_and_target():
     assert x[:, 0].tolist() == list(range(7))
     assert x[:, 1].tolist() == list(range(100, 107))
     assert y[:, 0].tolist() == list(range(3, 10))
+
+
+def test_ridge_selection_can_abstain_at_exact_null_limit():
+    rng = np.random.default_rng(7)
+    n_steps = 400
+    features = rng.normal(size=(n_steps, 2))
+    coefficients = np.zeros((n_steps, 1), dtype=np.float64)
+    coefficients[:200] = features[:200, :1]
+    coefficient_mask = np.ones_like(coefficients, dtype=bool)
+    ready = np.ones(n_steps, dtype=bool)
+    splits = {"train": (0, 200), "validation": (200, 300), "test": (300, 400)}
+
+    ridge, validation_mse = annual.select_ridge(
+        features,
+        ready,
+        coefficients,
+        coefficient_mask,
+        splits,
+        np.asarray([0]),
+        lead_hours=1,
+    )
+
+    assert ridge == annual.NULL_RIDGE
+    assert validation_mse == 0.0

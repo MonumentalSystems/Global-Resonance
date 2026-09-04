@@ -53,6 +53,7 @@ except ImportError:
 
 
 RIDGE_GRID = tuple(10.0**exponent for exponent in range(-4, 7))
+NULL_RIDGE = "infinite_null_limit"
 COMMON_WARMUP_HOURS = 24
 
 
@@ -258,7 +259,7 @@ def select_ridge(
     target_indices: np.ndarray,
     lead_hours: int,
     ridge_grid: Iterable[float] = RIDGE_GRID,
-) -> tuple[float, float]:
+) -> tuple[float | str, float]:
     """Select regularization using train-to-validation error only."""
 
     x, y, times = _control_rows(
@@ -289,6 +290,9 @@ def select_ridge(
         validation_mse = float(np.mean(error**2))
         if validation_mse < best[0]:
             best = (validation_mse, float(ridge))
+    null_validation_mse = float(np.mean(y[validation] ** 2))
+    if null_validation_mse < best[0]:
+        best = (null_validation_mse, NULL_RIDGE)
     return best[1], best[0]
 
 
@@ -331,7 +335,7 @@ def evaluate_control(
     target_indices: np.ndarray,
     labels: tuple[tuple[str, int, int], ...],
     evaluation_masks: dict[str, np.ndarray],
-    ridge: float,
+    ridge: float | str,
     lead_hours: int,
 ) -> dict[str, Any]:
     """Refit train+validation and evaluate the selected model once on test."""
@@ -351,10 +355,15 @@ def evaluate_control(
     std = x[fit].std(axis=0)
     std[std < 1e-8] = 1.0
     design = np.concatenate(((x - mean) / std, np.ones((len(x), 1))), axis=1)
-    gram = design[fit].T @ design[fit]
-    weights = np.linalg.solve(
-        gram + ridge * np.eye(gram.shape[0]), design[fit].T @ y[fit]
-    )
+    if ridge == NULL_RIDGE:
+        weights = np.zeros((design.shape[1], y.shape[1]), dtype=np.float64)
+    else:
+        numeric_ridge = float(ridge)
+        gram = design[fit].T @ design[fit]
+        weights = np.linalg.solve(
+            gram + numeric_ridge * np.eye(gram.shape[0]),
+            design[fit].T @ y[fit],
+        )
     squared_error = (design[test] @ weights - y[test]) ** 2
     result = _error_breakdown(
         squared_error, times[test], target_indices, labels, evaluation_masks
@@ -421,7 +430,9 @@ def paired_block_bootstrap(
                 "estimate": float(estimate),
                 "ci95": None,
                 "ci98_33": None,
+                "ci98_75": None,
                 "ci99_44": None,
+                "ci99_58": None,
                 "probability_improvement": None,
             }
             continue
@@ -445,9 +456,17 @@ def paired_block_bootstrap(
                 float(np.quantile(improvement, 1.0 / 120.0)),
                 float(np.quantile(improvement, 119.0 / 120.0)),
             ],
+            "ci98_75": [
+                float(np.quantile(improvement, 1.0 / 160.0)),
+                float(np.quantile(improvement, 159.0 / 160.0)),
+            ],
             "ci99_44": [
                 float(np.quantile(improvement, 1.0 / 360.0)),
                 float(np.quantile(improvement, 359.0 / 360.0)),
+            ],
+            "ci99_58": [
+                float(np.quantile(improvement, 1.0 / 480.0)),
+                float(np.quantile(improvement, 479.0 / 480.0)),
             ],
             "probability_improvement": float(np.mean(improvement > 0.0)),
             "samples": samples,
@@ -540,7 +559,7 @@ def _select_temporal_control(
         ridge,
         lead_hours,
     )
-    result["selected_candidate"] = name
+    result["selected_candidate"] = "null" if ridge == NULL_RIDGE else name
     result["selection_validation_mse"] = validation_mse
     result["candidate_validation_mse"] = {
         candidate_name: mse for mse, candidate_name, _ in selections
@@ -760,6 +779,7 @@ def run_controls(
         "common_warmup_hours": warmup_hours,
         "lead_hours": lead_hours,
         "ridge_grid": RIDGE_GRID,
+        "null_ridge_limit_available": True,
         "common_ready_fraction": float(ready.mean()),
         "half_lives_hours": half_lives,
         "models": models,

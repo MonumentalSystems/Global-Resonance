@@ -91,11 +91,13 @@ exponential state can act as a crude phase/trend feature for that structure.
 During disturbed intervals, the same smoothing suppresses rapid forcing and
 degrades the response forecast.
 
-The next clean test is consequently not a larger pole bank. It is to fit a
-training-only diurnal/seasonal quiet-field baseline, subtract it from the VSH
-targets, and rerun the same controls on residuals. If the longer-horizon pole
-gain disappears, it was quiet-field structure. If a held-out storm gain then
-emerges, that would reopen the dynamical-memory question.
+The next clean test was consequently not a larger pole bank. We fit a
+training-only diurnal/seasonal quiet-field baseline, subtracted it from the VSH
+targets, and reran the same controls on residuals. The 12-hour poloidal and
+3-hour radial gains disappeared, identifying calendar structure as their
+source. A much smaller 6-hour poloidal residual remained and now requires
+cross-year replication; see
+[`RESIDUALIZED_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`](RESIDUALIZED_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md).
 
 ## Reproduction
 

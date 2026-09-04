@@ -133,4 +133,8 @@ including zero. The one-hour nonlinear pole gate is therefore closed.
 The subsequent 3/6/12-hour test is recorded in
 `MULTIHORIZON_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`. It finds no
 reliable aggregate pole gain. Its largest sector clue is quiet-time rather than
-storm-time, motivating a training-only diurnal/seasonal residual test.
+storm-time, motivating a training-only diurnal/seasonal residual test. That
+test is now complete: the large 12-hour poloidal and 3-hour radial clues
+disappear after leakage-safe calendar residualization. A much smaller 6-hour
+poloidal effect remains for cross-year replication; see
+[`RESIDUALIZED_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`](RESIDUALIZED_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md).
