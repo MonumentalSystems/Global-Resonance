@@ -115,7 +115,7 @@ The downloader:
 
 ## Next experiment gate
 
-The next controlled experiment can now be run without neural training first:
+The next controlled experiment was completed without neural training first:
 
 1. reduce minute vectors to robust hourly values and forecast hourly changes;
 2. align the already cached 2024 NASA OMNI upstream drivers;
@@ -125,3 +125,7 @@ The next controlled experiment can now be run without neural training first:
 6. proceed to the required three-seed RotationalAdamW neural experiment only
    if the tangential memory effect repeats across held-out storms.
 
+See `ANNUAL_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`. The tangential
+effect did not repeat: the validation-selected pole was 0.264% worse overall
+and 0.701% worse during held-out Q4 storm hours, with uncertainty intervals
+including zero. The one-hour nonlinear pole gate is therefore closed.

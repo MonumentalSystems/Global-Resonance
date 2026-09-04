@@ -109,7 +109,10 @@ The data-acquisition portion of this gate is now complete. See
 `INTERMAGNET_GLOBAL_DATA_2024.md`: the 16-station INTERMAGNET network covers all
 527,040 minutes of 2024, remains full-rank at every minute, and reduces the
 complete-network VSH condition number from 674.71 to 1.459. The annual temporal
-control experiment remains pending.
+control is now complete; see
+`ANNUAL_VECTOR_SPHERICAL_OPERATOR_RESULTS_20260904.md`. It does not replicate
+the January pole effect, including in the poloidal and toroidal sectors, so the
+one-hour nonlinear pole experiment should not proceed from this evidence.
 
 ## Reproduction
 
