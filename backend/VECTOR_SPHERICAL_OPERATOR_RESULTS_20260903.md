@@ -105,6 +105,12 @@ and at least one year with multiple storms is needed to test whether the
 tangential 3-hour response repeats. A later nonlinear experiment must use
 three seeds, RotationalAdamW, W&B, checkpoints, and the results registry.
 
+The data-acquisition portion of this gate is now complete. See
+`INTERMAGNET_GLOBAL_DATA_2024.md`: the 16-station INTERMAGNET network covers all
+527,040 minutes of 2024, remains full-rank at every minute, and reduces the
+complete-network VSH condition number from 674.71 to 1.459. The annual temporal
+control experiment remains pending.
+
 ## Reproduction
 
 ```bash
